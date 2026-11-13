@@ -33,60 +33,156 @@ juce::AudioProcessorValueTreeState::ParameterLayout TheatreProcessor::createLayo
     return { p.begin(), p.end() };
 }
 
-static bool isSupportedSet (const juce::AudioChannelSet& s)
+// Map one channel type to the hall channel it feeds (-1 = not metered)
+static int mapType (juce::AudioChannelSet::ChannelType t)
 {
-    return s == juce::AudioChannelSet::stereo()
-        || s == juce::AudioChannelSet::create5point1()
-        || s == juce::AudioChannelSet::create7point1()
-        || s == juce::AudioChannelSet::create7point1point4();
+    using CT = juce::AudioChannelSet::ChannelType;
+    switch (t)
+    {
+        case CT::left:              return hall::L;
+        case CT::right:             return hall::R;
+        case CT::centre:            return hall::C;
+        case CT::LFE:
+        case CT::LFE2:              return hall::LFE;
+        case CT::leftSurround:
+        case CT::leftSurroundSide:  return hall::Ls;
+        case CT::rightSurround:
+        case CT::rightSurroundSide: return hall::Rs;
+        case CT::leftSurroundRear:  return hall::Lrs;
+        case CT::rightSurroundRear: return hall::Rrs;
+        case CT::topFrontLeft:
+        case CT::topSideLeft:       return hall::Ltf;
+        case CT::topFrontRight:
+        case CT::topSideRight:      return hall::Rtf;
+        case CT::topRearLeft:       return hall::Ltr;
+        case CT::topRearRight:      return hall::Rtr;
+        default:                    return -1;
+    }
+}
+
+// Unlabelled ("discrete") tracks: read the channels in the standard film / SMPTE order
+int TheatreProcessor::mapDiscrete (int n, int i)
+{
+    using namespace hall;
+    static const int o1[]  = { C };
+    static const int o2[]  = { L, R };
+    static const int o6[]  = { L, R, C, LFE, Ls, Rs };
+    static const int o8[]  = { L, R, C, LFE, Ls, Rs, Lrs, Rrs };
+    static const int o10[] = { L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr };            // 5.1.4
+    static const int o12[] = { L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltf, Rtf, Ltr, Rtr };   // 7.1.4
+    if (i < 0 || i >= n) return -1;
+    switch (n)
+    {
+        case 1:  return o1[i];
+        case 2:  return o2[i];
+        case 6:  return o6[i];
+        case 8:  return o8[i];
+        case 10: return o10[i];
+        case 12: return o12[i];
+        default: return -1;
+    }
+}
+
+static bool layoutUsable (const juce::AudioChannelSet& s)
+{
+    const int n = s.size();
+    if (n < 1 || n > 12) return false;
+    if (s.isDiscreteLayout())
+        return n == 1 || n == 2 || n == 6 || n == 8 || n == 10 || n == 12;
+    std::array<bool, hall::NumCh> used {};
+    for (int i = 0; i < n; ++i)
+    {
+        const int c = mapType (s.getTypeOfChannel (i));
+        if (c < 0 || used[(size_t) c]) return false;   // unknown or doubled channel: refuse rather than mis-meter
+        used[(size_t) c] = true;
+    }
+    return true;
 }
 
 bool TheatreProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     const auto& in = layouts.getMainInputChannelSet();
     const auto& out = layouts.getMainOutputChannelSet();
-    return in == out && isSupportedSet (out);
+    return in == out && layoutUsable (out);
 }
 
 void TheatreProcessor::updateChannelMap()
 {
-    using CT = juce::AudioChannelSet::ChannelType;
     const auto set = getChannelLayoutOfBus (true, 0);
-    chMap.fill (-1);
-    for (auto& p : channelPresent) p.store (false);
-
-    const int n = std::min (set.size(), (int) chMap.size());
+    std::array<int, maxCh> map;
+    map.fill (-1);
+    std::array<bool, hall::NumCh> present {};
+    const int n = std::min (set.size(), maxCh);
+    const bool discrete = set.isDiscreteLayout();
     for (int i = 0; i < n; ++i)
     {
-        int c = -1;
-        switch (set.getTypeOfChannel (i))
-        {
-            case CT::left:              c = hall::L; break;
-            case CT::right:             c = hall::R; break;
-            case CT::centre:            c = hall::C; break;
-            case CT::LFE:               c = hall::LFE; break;
-            case CT::leftSurround:
-            case CT::leftSurroundSide:  c = hall::Ls; break;
-            case CT::rightSurround:
-            case CT::rightSurroundSide: c = hall::Rs; break;
-            case CT::leftSurroundRear:  c = hall::Lrs; break;
-            case CT::rightSurroundRear: c = hall::Rrs; break;
-            case CT::topFrontLeft:      c = hall::Ltf; break;
-            case CT::topFrontRight:     c = hall::Rtf; break;
-            case CT::topRearLeft:       c = hall::Ltr; break;
-            case CT::topRearRight:      c = hall::Rtr; break;
-            default: break;
-        }
-        chMap[(size_t) i] = c;
-        if (c >= 0) channelPresent[(size_t) c].store (true);
+        const int c = discrete ? mapDiscrete (n, i) : mapType (set.getTypeOfChannel (i));
+        if (c >= 0 && ! present[(size_t) c]) { map[(size_t) i] = c; present[(size_t) c] = true; }
     }
-    numMapped = n;
 
     int f = hall::FStereo;
-    if (set == juce::AudioChannelSet::create7point1point4()) f = hall::F714;
-    else if (set == juce::AudioChannelSet::create7point1())  f = hall::F71;
-    else if (set == juce::AudioChannelSet::create5point1())  f = hall::F51;
+    if (present[hall::Ltf] || present[hall::Ltr]) f = hall::F714;
+    else if (present[hall::Lrs])                  f = hall::F71;
+    else if (present[hall::Ls] || present[hall::LFE]) f = hall::F51;
+
+    juce::String desc;
+    juce::StringArray names;
+    for (int i = 0; i < n; ++i) if (map[(size_t) i] >= 0) names.add (hall::chName (map[(size_t) i]));
+    desc << n << " ch " << (discrete ? "(unlabelled, read as " : "(") << names.joinIntoString (" ") << ")";
+
+    {
+        const juce::SpinLock::ScopedLockType sl (layoutLock);
+        chMap = map;
+        numMapped = n;
+        layoutName = desc;
+    }
+    for (int c = 0; c < hall::NumCh; ++c) channelPresent[(size_t) c].store (present[(size_t) c]);
     busFormat.store (f);
+}
+
+juce::String TheatreProcessor::getLayoutDescription() const
+{
+    const juce::SpinLock::ScopedLockType sl (layoutLock);
+    return layoutName;
+}
+
+static double besselI0 (double x)
+{
+    double sum = 1.0, term = 1.0;
+    for (int k = 1; k < 50; ++k)
+    {
+        term *= (x / (2.0 * k)) * (x / (2.0 * k));
+        sum += term;
+        if (term < 1.0e-12 * sum) break;
+    }
+    return sum;
+}
+
+void TheatreProcessor::setupTruePeak (double fs)
+{
+    // Windowed-sinc polyphase interpolator: 4x below 96 kHz, 2x at 96 kHz and above (BS.1770-4 Annex 2)
+    tpPhases = fs < 96000.0 ? 4 : 2;
+    const int N = tpPhases * tpTaps;
+    const double centre = (N - 1) * 0.5, beta = 7.0;
+    std::vector<double> h ((size_t) N);
+    for (int i = 0; i < N; ++i)
+    {
+        const double t = ((double) i - centre) / (double) tpPhases;
+        const double sinc = std::abs (t) < 1.0e-12 ? 1.0 : std::sin (juce::MathConstants<double>::pi * t) / (juce::MathConstants<double>::pi * t);
+        const double r = ((double) i - centre) / centre;
+        const double w = besselI0 (beta * std::sqrt (std::max (0.0, 1.0 - r * r))) / besselI0 (beta);
+        h[(size_t) i] = sinc * w;
+    }
+    tpCoef.fill (0.0f);
+    for (int p = 0; p < tpPhases; ++p)
+    {
+        double sum = 0.0;
+        for (int k = 0; k < tpTaps; ++k) sum += h[(size_t) (p + k * tpPhases)];
+        for (int k = 0; k < tpTaps; ++k)
+            tpCoef[(size_t) (p * tpTaps + k)] = (float) (h[(size_t) (p + k * tpPhases)] / sum);
+    }
+    for (auto& hh : tpHist) hh.fill (0.0f);
+    tpPos.fill (0);
 }
 
 void TheatreProcessor::setupKWeighting (double fs)
@@ -117,14 +213,13 @@ void TheatreProcessor::prepareToPlay (double sampleRate, int)
 {
     setLatencySamples (0);
     setupKWeighting (sampleRate);
+    setupTruePeak (sampleRate);
     for (auto& k : kState) k = {};
     kAcc.fill (0.0);
     blockLen = std::max (1, (int) std::round (sampleRate * 0.1));
     blockPos = 0;
     updateChannelMap();
 }
-
-void TheatreProcessor::processBlock (juce::AudioBuffer<double>&, juce::MidiBuffer&) {}
 
 void TheatreProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
@@ -139,16 +234,36 @@ void TheatreProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mid
         const int c = chMap[(size_t) i];
         if (c < 0) continue;
         const float* d = buffer.getReadPointer (i);
-        float pk = 0.0f, ss = 0.0f;
+        float pk = 0.0f, ss = 0.0f, tp = 0.0f;
+        auto& hist = tpHist[(size_t) i];
+        int hp = tpPos[(size_t) i];
         for (int n = 0; n < numSamples; ++n)
         {
             const float v = d[n];
             pk = std::max (pk, std::abs (v));
             ss += v * v;
+            hp = (hp + 1) % tpTaps;
+            hist[(size_t) hp] = v;
+            for (int ph = 0; ph < tpPhases; ++ph)
+            {
+                const float* co = tpCoef.data() + ph * tpTaps;
+                float y = 0.0f;
+                int idx = hp;
+                for (int k = 0; k < tpTaps; ++k)
+                {
+                    y += co[k] * hist[(size_t) idx];
+                    idx = idx == 0 ? tpTaps - 1 : idx - 1;
+                }
+                tp = std::max (tp, std::abs (y));
+            }
         }
+        tpPos[(size_t) i] = hp;
+        tp = std::max (tp, pk);   // never report less than the sample peak
         auto& m = meters[(size_t) c];
         float prev = m.peak.load();
         while (pk > prev && ! m.peak.compare_exchange_weak (prev, pk)) {}
+        float prevTp = m.truePeak.load();
+        while (tp > prevTp && ! m.truePeak.compare_exchange_weak (prevTp, tp)) {}
         float s = m.sumSq.load();
         while (! m.sumSq.compare_exchange_weak (s, s + ss)) {}
         m.count.fetch_add (numSamples);

@@ -269,6 +269,14 @@ void PlanView::paint (Graphics& g)
         g.fillEllipse (pe.x - 5.0f, pe.y - 5.0f, 10.0f, 10.0f);
     }
 
+    // Trail of where the sound has travelled
+    for (size_t i = 1; i < vs.trail.size(); ++i)
+    {
+        const float t = (float) i / (float) vs.trail.size();
+        g.setColour (theme::accent.withAlpha (0.55f * t));
+        g.drawLine ({ P (vs.trail[i - 1].x, vs.trail[i - 1].y), P (vs.trail[i].x, vs.trail[i].y) }, 1.0f + 3.0f * t);
+    }
+
     // Source puck
     {
         auto p = P (vs.srcM.x, vs.srcM.y);
@@ -626,7 +634,24 @@ void Hall3DView::paint (Graphics& g)
         }
     }
 
-    // Coverage spheres
+    const auto S = vs.srcM;
+    auto srcP = project (S.x, S.y, S.z);
+
+    // Beams: the sound feeding each speaker that is playing it right now
+    for (size_t i = 0; i < M.speakers.size(); ++i)
+    {
+        const float k = vs.spkIntensity (i);
+        if (k < 0.15f) continue;
+        const auto& sp = M.speakers[i];
+        auto pr = project (sp.x, sp.y, sp.z);
+        auto c = theme::groupColour (sp.type);
+        ColourGradient bg (Colours::white.withAlpha (0.05f + 0.25f * k * vs.srcLevel), srcP.p.x, srcP.p.y,
+                           c.withAlpha (0.10f + 0.45f * k), pr.p.x, pr.p.y, false);
+        g.setGradientFill (bg);
+        g.drawLine ({ srcP.p, pr.p }, 1.0f + 2.5f * k);
+    }
+
+    // Live coverage spheres, driven by the channel meters
     if (vs.show != 2)
     {
         struct Sph { float d, k; int idx; };
@@ -634,7 +659,7 @@ void Hall3DView::paint (Graphics& g)
         for (size_t i = 0; i < M.speakers.size(); ++i)
         {
             const float k = vs.spkIntensity (i);
-            if (k < 0.08f || M.speakers[i].ch == hall::LFE) continue;
+            if (k < 0.03f) continue;
             sph.push_back ({ project (M.speakers[i].x, M.speakers[i].y, M.speakers[i].z).d, k, (int) i });
         }
         std::vector<float> ks;
@@ -646,64 +671,93 @@ void Hall3DView::paint (Graphics& g)
         {
             const auto& sp = M.speakers[(size_t) s.idx];
             auto pr = project (sp.x, sp.y, sp.z);
-            const float rad = (1.6f + 6.5f * s.k) * pr.s;
+            const float flash = s.idx < (int) vs.spkFlash.size() ? vs.spkFlash[(size_t) s.idx] : 0.0f;
+            const float rad = (0.6f + 7.0f * s.k + 0.8f * flash) * pr.s;
+            const float a = jmin (1.0f, s.k + 0.5f * flash);
             auto c = theme::groupColour (sp.type);
-            ColourGradient grad (c.withAlpha (0.05f + 0.13f * s.k), pr.p.x, pr.p.y,
+            ColourGradient grad (c.withAlpha (0.06f + 0.16f * a), pr.p.x, pr.p.y,
                                  c.withAlpha (0.0f), pr.p.x + rad, pr.p.y, true);
-            grad.addColour (0.62, c.withAlpha (0.03f + 0.08f * s.k));
-            grad.addColour (0.94, c.withAlpha (0.10f + 0.30f * s.k));
+            grad.addColour (0.62, c.withAlpha (0.03f + 0.09f * a));
+            grad.addColour (0.94, c.withAlpha (0.10f + 0.35f * a));
             g.setGradientFill (grad);
             g.fillEllipse (pr.p.x - rad, pr.p.y - rad, rad * 2.0f, rad * 2.0f);
-            ColourGradient hl (Colours::white.withAlpha (0.20f * s.k), pr.p.x - rad * 0.3f, pr.p.y - rad * 0.4f,
+            ColourGradient hl (Colours::white.withAlpha (0.22f * a), pr.p.x - rad * 0.3f, pr.p.y - rad * 0.4f,
                                Colours::white.withAlpha (0.0f), pr.p.x - rad * 0.3f + rad * 0.45f, pr.p.y - rad * 0.4f, true);
             g.setGradientFill (hl);
             g.fillEllipse (pr.p.x - rad, pr.p.y - rad, rad * 2.0f, rad * 2.0f);
-            if (s.k < labelMin) continue;
+
+            // Wavefronts leaving the speaker
+            const float ph = s.idx < (int) vs.wavePhase.size() ? vs.wavePhase[(size_t) s.idx] : 0.0f;
+            for (int w = 0; w < 2; ++w)
+            {
+                const float f = std::fmod (ph + 0.5f * (float) w, 1.0f);
+                const float wr = rad * (0.15f + 1.05f * f);
+                g.setColour (c.withAlpha ((1.0f - f) * 0.6f * s.k));
+                g.drawEllipse (pr.p.x - wr, pr.p.y - wr, wr * 2.0f, wr * 2.0f, 1.0f + 1.5f * s.k);
+            }
+
+            if (s.k < labelMin || s.k < 0.2f) continue;
+            const int m = sp.ch == hall::LFE ? (int) hall::LFE : hall::mapChannel (vs.format, sp.ch);
             g.setFont (theme::mono (10.0f, true));
             g.setColour (c);
-            const float db = 20.0f * std::log10 (jmax (1.0e-6f, vs.gains.spk[(size_t) s.idx]));
-            g.drawText (sp.id + " " + String (db, 1) + " dB", (int) pr.p.x - 60, (int) (pr.p.y - rad - 16.0f), 120, 14, Justification::centred);
+            g.drawText (sp.id + " " + fmtDb (m >= 0 ? vs.renderDb[(size_t) m] : -90.0f) + " dB",
+                        (int) pr.p.x - 60, (int) (pr.p.y - rad - 16.0f), 120, 14, Justification::centred);
         }
     }
 
-    // Source: floor ripple, drop line, object sphere
+    // Trail: where the sound has just travelled
+    if (vs.trail.size() > 1)
     {
-        const auto S = vs.srcM;
-        Path ring;
+        const size_t n = vs.trail.size();
+        for (size_t i = 1; i < n; ++i)
+        {
+            const float t = (float) i / (float) n;
+            auto a = project (vs.trail[i - 1].x, vs.trail[i - 1].y, vs.trail[i - 1].z).p;
+            auto b = project (vs.trail[i].x, vs.trail[i].y, vs.trail[i].z).p;
+            g.setColour (theme::accent.withAlpha (0.55f * t));
+            g.drawLine ({ a, b }, 1.0f + 3.0f * t);
+        }
+    }
+
+    // Source: floor ripple, drop line, object sphere (brightness follows the audio)
+    {
+        const float live = 0.25f + 0.75f * vs.srcLevel;
         const float rr = 1.0f + vs.size * 3.0f;
-        const float phase = (float) std::fmod (Time::getMillisecondCounterHiRes() / 1600.0, 1.0);
+        const float phase = (float) std::fmod (Time::getMillisecondCounterHiRes() / (1600.0 - 900.0 * vs.srcLevel), 1.0);
         for (int pass = 0; pass < 2; ++pass)
         {
             Path pth;
             const float rad = pass == 0 ? rr : rr * (0.3f + 1.3f * phase);
             for (int i = 0; i <= 32; ++i)
             {
-                const float a = (float) i / 32.0f * MathConstants<float>::twoPi;
-                auto p = project (S.x + std::cos (a) * rad, S.y + std::sin (a) * rad, 0.02f).p;
+                const float ang = (float) i / 32.0f * MathConstants<float>::twoPi;
+                auto p = project (S.x + std::cos (ang) * rad, S.y + std::sin (ang) * rad, 0.02f).p;
                 if (i == 0) pth.startNewSubPath (p); else pth.lineTo (p);
             }
-            g.setColour (theme::accent.withAlpha (pass == 0 ? 0.35f : 0.8f * (1.0f - phase)));
+            g.setColour (theme::accent.withAlpha ((pass == 0 ? 0.35f : 0.8f * (1.0f - phase)) * live));
             g.strokePath (pth, PathStrokeType (2.0f));
         }
-        auto top = project (S.x, S.y, S.z), base = project (S.x, S.y, 0.0f);
-        ColourGradient dl (theme::accent.withAlpha (0.9f), top.p.x, top.p.y, theme::accent.withAlpha (0.15f), base.p.x, base.p.y, false);
+        auto top = srcP, base = project (S.x, S.y, 0.0f);
+        ColourGradient dl (theme::accent.withAlpha (0.9f * live), top.p.x, top.p.y, theme::accent.withAlpha (0.15f * live), base.p.x, base.p.y, false);
         g.setGradientFill (dl);
         g.drawLine ({ top.p, base.p }, 2.0f);
-        const float orad = (1.0f + vs.size * 5.4f) * top.s;
-        ColourGradient og (Colours::white.withAlpha (0.10f), top.p.x, top.p.y, Colours::white.withAlpha (0.0f), top.p.x + orad, top.p.y, true);
-        og.addColour (0.7, Colours::white.withAlpha (0.06f));
-        og.addColour (0.96, Colours::white.withAlpha (0.35f));
+        const float orad = (1.0f + vs.size * 5.4f) * top.s * (0.85f + 0.3f * vs.srcLevel);
+        ColourGradient og (Colours::white.withAlpha (0.10f * live), top.p.x, top.p.y, Colours::white.withAlpha (0.0f), top.p.x + orad, top.p.y, true);
+        og.addColour (0.7, Colours::white.withAlpha (0.06f * live));
+        og.addColour (0.96, Colours::white.withAlpha (0.35f * live));
         g.setGradientFill (og);
         g.fillEllipse (top.p.x - orad, top.p.y - orad, orad * 2.0f, orad * 2.0f);
-        const float core = jmax (8.0f, 0.5f * top.s);
-        g.setColour (Colours::white.withAlpha (0.25f));
+        const float core = jmax (8.0f, 0.5f * top.s) * (0.8f + 0.5f * vs.srcLevel);
+        g.setColour (Colours::white.withAlpha (0.25f * live));
         g.fillEllipse (top.p.x - core * 2.0f, top.p.y - core * 2.0f, core * 4.0f, core * 4.0f);
-        ColourGradient cg (Colours::white, top.p.x - core * 0.3f, top.p.y - core * 0.3f, Colour (0xff9adff5), top.p.x + core, top.p.y + core, true);
+        ColourGradient cg (Colours::white.withAlpha (live), top.p.x - core * 0.3f, top.p.y - core * 0.3f,
+                           Colour (0xff9adff5).withAlpha (live), top.p.x + core, top.p.y + core, true);
         g.setGradientFill (cg);
         g.fillEllipse (top.p.x - core, top.p.y - core, core * 2.0f, core * 2.0f);
         g.setFont (theme::mono (11.0f, true));
-        g.setColour (Colour (0xffbfefff));
-        g.drawText (vs.trackSource ? "TRACK" : "SOUND", (int) top.p.x - 40, (int) (top.p.y - orad - 20.0f), 80, 14, Justification::centred);
+        g.setColour (Colour (0xffbfefff).withAlpha (live));
+        const String lbl = vs.srcLevel < 0.02f ? String ("NO SIGNAL") : (vs.trackSource ? String ("TRACK") : String ("SOUND"));
+        g.drawText (lbl, (int) top.p.x - 50, (int) (top.p.y - orad - 20.0f), 100, 14, Justification::centred);
     }
 
     // Seat pins
@@ -796,61 +850,80 @@ void Hall3DView::mouseWheelMove (const MouseEvent&, const MouseWheelDetails& w)
 // =====================================================================================
 static float meterPos (float db)
 {
-    db = jmax (db, -60.0f);
-    if (db >= -30.0f) return 0.25f + 0.75f * (db + 30.0f) / 30.0f;
-    return 0.25f * (db + 60.0f) / 30.0f;
+    // 0..-20 dB uses 60 % of the height, -20..-40 dB 25 %, -40..-60 dB 15 %
+    if (db >= 0.0f) return 1.0f;
+    if (db >= -20.0f) return 0.40f + 0.60f * (db + 20.0f) / 20.0f;
+    if (db >= -40.0f) return 0.15f + 0.25f * (db + 40.0f) / 20.0f;
+    if (db >= -60.0f) return 0.15f * (db + 60.0f) / 20.0f;
+    return 0.0f;
 }
 
 void MeterPanel::paint (Graphics& g)
 {
     drawPanel (g, getLocalBounds().toFloat());
-    sectionTitle (g, "Channel meters - " + String (hall::formatName (vs.format)), 14, 14);
-    g.setFont (theme::mono (10.0f));
-    g.setColour (Colour (0xff6f788b));
-    g.drawText ("dBFS - peak hold", getWidth() - 140, 14, 126, 14, Justification::right);
+    sectionTitle (g, "Channel meters - track input (true peak)", 14, 12);
 
-    const float mh = 120.0f, top = 40.0f;
+    const float mh = 112.0f, top = 50.0f;
     const float left = 40.0f, right = (float) getWidth() - 14.0f;
-    for (int t : { 0, -10, -20, -30, -45, -60 })
+    g.setFont (theme::mono (9.0f));
+    for (int t : { 0, -3, -6, -10, -15, -20, -30, -40, -60 })
     {
         const float y = top + (1.0f - meterPos ((float) t)) * mh;
-        g.drawText (String (t), 4, (int) y - 6, 30, 12, Justification::right);
+        g.setColour (Colour (0xff6f788b));
+        g.drawText (String (t), 4, (int) y - 5, 30, 10, Justification::right);
+        g.setColour (Colour (0x14ffffff));
+        g.drawHorizontalLine ((int) y, left - 4.0f, right);
     }
     const auto& chs = vs.meterChannels;
     const int n = (int) chs.size();
+    if (n == 0)
+    {
+        g.setColour (theme::dim);
+        g.setFont (theme::font (12.0f));
+        g.drawText ("No channels on this track", getLocalBounds().withTrimmedTop (60).withHeight (40), Justification::centred);
+    }
     const float slot = (right - left) / (float) jmax (1, n);
     const float bw = jmin (14.0f, slot * 0.55f);
+    const float yRed = top + (1.0f - meterPos (-1.0f)) * mh;     // above -1 dBTP
+    const float yYel = top + (1.0f - meterPos (-10.0f)) * mh;    // -10 .. -1
     for (int i = 0; i < n; ++i)
     {
         const int c = chs[(size_t) i];
         const float cx = left + slot * ((float) i + 0.5f);
         Rectangle<float> r (cx - bw * 0.5f, top, bw, mh);
-        // unlit segments
-        g.setColour (Colour (0xff45201c)); g.fillRect (r.withHeight (mh * 0.15f));
-        g.setColour (Colour (0xff41391a)); g.fillRect (r.withY (top + mh * 0.15f).withHeight (mh * 0.35f));
-        g.setColour (Colour (0xff14382a)); g.fillRect (r.withY (top + mh * 0.5f).withHeight (mh * 0.5f));
-        if (vs.onBus[(size_t) c])
+        g.setColour (Colour (0xff45201c)); g.fillRect (Rectangle<float>::leftTopRightBottom (r.getX(), top, r.getRight(), yRed));
+        g.setColour (Colour (0xff41391a)); g.fillRect (Rectangle<float>::leftTopRightBottom (r.getX(), yRed, r.getRight(), yYel));
+        g.setColour (Colour (0xff14382a)); g.fillRect (Rectangle<float>::leftTopRightBottom (r.getX(), yYel, r.getRight(), top + mh));
+        const float lit = meterPos (vs.levelDb[(size_t) c]) * mh;
+        if (lit > 0.0f)
         {
-            const float lit = meterPos (vs.levelDb[(size_t) c]) * mh;
             g.saveState();
-            g.reduceClipRegion (r.withTop (top + mh - lit).toNearestInt());
-            g.setColour (Colour (0xffff5d4a)); g.fillRect (r.withHeight (mh * 0.15f));
-            g.setColour (Colour (0xfff2c84b)); g.fillRect (r.withY (top + mh * 0.15f).withHeight (mh * 0.35f));
-            g.setColour (Colour (0xff2fd18a)); g.fillRect (r.withY (top + mh * 0.5f).withHeight (mh * 0.5f));
+            g.reduceClipRegion (Rectangle<float>::leftTopRightBottom (r.getX(), top + mh - lit, r.getRight(), top + mh).getSmallestIntegerContainer());
+            g.setColour (Colour (0xffff5d4a)); g.fillRect (Rectangle<float>::leftTopRightBottom (r.getX(), top, r.getRight(), yRed));
+            g.setColour (Colour (0xfff2c84b)); g.fillRect (Rectangle<float>::leftTopRightBottom (r.getX(), yRed, r.getRight(), yYel));
+            g.setColour (Colour (0xff2fd18a)); g.fillRect (Rectangle<float>::leftTopRightBottom (r.getX(), yYel, r.getRight(), top + mh));
             g.restoreState();
-            if (vs.holdDb[(size_t) c] > -60.0f)
-            {
-                g.setColour (theme::cream);
-                g.fillRect (r.getX(), top + (1.0f - meterPos (vs.holdDb[(size_t) c])) * mh, bw, 2.0f);
-            }
         }
+        if (vs.holdDb[(size_t) c] > -60.0f)
+        {
+            g.setColour (theme::cream);
+            g.fillRect (r.getX(), top + (1.0f - meterPos (vs.holdDb[(size_t) c])) * mh - 1.0f, bw, 2.0f);
+        }
+        // Max true peak since reset (red at -1 dBTP and above)
+        const float mx = vs.maxTpDb[(size_t) c];
+        const bool over = mx >= -1.0f;
+        Rectangle<float> nb (cx - slot * 0.5f + 1.0f, 30.0f, slot - 2.0f, 14.0f);
+        if (over) { g.setColour (Colour (0xffc0392b)); g.fillRoundedRectangle (nb, 3.0f); }
+        g.setFont (theme::mono (slot < 26.0f ? 8.0f : 9.5f, true));
+        g.setColour (over ? Colours::white : (mx > -60.0f ? theme::text2 : theme::dim2));
+        g.drawText (mx > -100.0f ? String (mx, 1) : String ("-inf"), nb, Justification::centred);
         g.setFont (theme::font (9.5f, true));
-        g.setColour (vs.onBus[(size_t) c] ? theme::text : theme::dim2);
-        g.drawText (hall::chName (c), (int) (cx - 16.0f), (int) (top + mh + 5.0f), 32, 12, Justification::centred);
+        g.setColour (theme::text);
+        g.drawText (hall::chName (c), (int) (cx - 16.0f), (int) (top + mh + 4.0f), 32, 12, Justification::centred);
     }
 
     // Loudness row
-    const int ly = (int) (top + mh + 26.0f);
+    const int ly = (int) (top + mh + 24.0f);
     g.setColour (Colour (0xff1e222c));
     g.fillRect (14, ly - 6, getWidth() - 28, 1);
     auto cell = [&] (int x, const String& v, const String& l, Colour c)
@@ -863,16 +936,9 @@ void MeterPanel::paint (Graphics& g)
         g.drawText (l, x, ly + 20, 90, 12, Justification::left);
     };
     cell (14, fmtDb (vs.lufsM), "Momentary LUFS", theme::text);
-    cell (92, fmtDb (vs.lufsS), "Short-term LUFS", theme::text);
-    cell (176, fmtDb (vs.lufsI), "Integrated LUFS", theme::text);
-    if (! vs.onBus[(size_t) hall::L] && ! vs.onBus[(size_t) hall::C])
-    {
-        g.setFont (theme::font (10.0f));
-        g.setColour (theme::dim2);
-    }
-    g.setFont (theme::mono (11.0f, true));
-    g.setColour (Colour (0xfff2c84b));
-    g.drawText ("Peak " + fmtDb (vs.maxPeak), getWidth() - 160, ly + 2, 80, 16, Justification::right);
+    cell (86, fmtDb (vs.lufsS), "Short-term LUFS", theme::text);
+    cell (158, fmtDb (vs.lufsI), "Integrated LUFS", theme::text);
+    cell (232, fmtDb (vs.maxPeak), "Max dBTP", vs.maxPeak >= -1.0f ? Colour (0xffff5d4a) : Colour (0xfff2c84b));
 }
 
 // =====================================================================================
@@ -1055,7 +1121,6 @@ TheatreEditor::TheatreEditor (TheatreProcessor& p)
 {
     setLookAndFeel (&look);
     addAndMakeVisible (root);
-    root.setBounds (0, 0, W, H);
 
     for (auto* b : { &tabPlan, &tab3D }) root.addAndMakeVisible (*b);
     tabPlan.onClick = [this] { setTab (0); };
@@ -1089,7 +1154,7 @@ TheatreEditor::TheatreEditor (TheatreProcessor& p)
         for (auto* id : { "x", "y", "z" })
             vs.fly ? beginGesture (id) : endGesture (id);
     };
-    meters.resetBtn.onClick = [this] { gated400.clear(); loud100.clear(); maxPeakLin = 0; };
+    meters.resetBtn.onClick = [this] { gated400.clear(); loud100.clear(); maxPeakLin = 0; vs.maxTpDb.fill (-140.0f); };
 
     plan.onPan = [this] (float px, float py, int phase)
     {
@@ -1130,16 +1195,25 @@ TheatreEditor::TheatreEditor (TheatreProcessor& p)
     vs.yaw = vs.tYaw; vs.pitch = vs.tPitch; vs.zoom = vs.tZoom;
     tab = jlimit (0, 1, (int) ui.getProperty ("tab", 1));
 
-    constrainer.setFixedAspectRatio ((double) W / (double) H);
-    constrainer.setSizeLimits (W * 6 / 10, H * 6 / 10, W * 3 / 2, H * 3 / 2);
+    // Open filling the screen: match the layout to the screen's shape, then scale to fit.
+    Rectangle<int> screen (0, 0, 1440, 900);
+    if (auto* d = Desktop::getInstance().getDisplays().getPrimaryDisplay())
+        screen = d->userArea;
+    const int hostBar = 44;                                   // the DAW's own plug-in window title bar
+    const int availW = jmax (800, screen.getWidth());
+    const int availH = jmax (500, screen.getHeight() - hostBar);
+    LW = jlimit (W, W * 2, roundToInt ((double) H * (double) availW / (double) availH));
+    root.setBounds (0, 0, LW, H);
+    const double fit = jmin ((double) availW / (double) LW, (double) availH / (double) H);
+    constrainer.setFixedAspectRatio ((double) LW / (double) H);
+    constrainer.setSizeLimits (LW / 2, H / 2, jmax (availW, LW * 2), jmax (availH, H * 2));
     setConstrainer (&constrainer);
     setResizable (true, true);
-    const double scale = (double) ui.getProperty ("scale", 0.9);
-    setSize (roundToInt (W * scale), roundToInt (H * scale));
+    setSize (roundToInt (LW * fit), roundToInt (H * fit));
 
     setTab (tab);
     lastTime = Time::getMillisecondCounterHiRes();
-    startTimerHz (30);
+    startTimerHz (60);
 }
 
 TheatreEditor::~TheatreEditor()
@@ -1151,19 +1225,19 @@ TheatreEditor::~TheatreEditor()
 
 void TheatreEditor::resized()
 {
-    const float s = (float) getWidth() / (float) W;
+    const float s = (float) getHeight() / (float) H;
     root.setTransform (AffineTransform::scale (s));
-    proc.uiState.setProperty ("scale", s, nullptr);
+    const int W = LW;   // logical width matches the screen's shape
 
     tabPlan.setBounds (232, 14, 92, 32);
     tab3D.setBounds (326, 14, 80, 32);
     for (int i = 0; i < 4; ++i)
         fmtBtns[(size_t) i].setBounds (W - 24 - (4 - i) * 70, 14, 66, 32);
 
-    const Rectangle<int> view (16, 64, 956, 780);
+    const int sw = 356, sxp = W - 16 - sw;
+    const Rectangle<int> view (16, 64, sxp - 16 - 16, 780);
     plan.setBounds (view);
     hall3d.setBounds (view);
-    const int sxp = 988, sw = W - 16 - sxp;
     meters.setBounds (sxp, 64, sw, 228);
     sound.setBounds (sxp, 306, sw, 222);
     seatPanel.setBounds (sxp, 542, sw, 302);
@@ -1171,6 +1245,8 @@ void TheatreEditor::resized()
 
 void TheatreEditor::Root::paint (Graphics& g)
 {
+    const int W = ed.LW;
+
     ColourGradient bg (Colour (0xff161a26), (float) W * 0.5f, -100.0f, theme::bg, (float) W * 0.5f, (float) H * 0.7f, true);
     g.setGradientFill (bg);
     g.fillAll();
@@ -1195,7 +1271,10 @@ void TheatreEditor::Root::paint (Graphics& g)
     else if (v.object && v.format != hall::F714) info << " - objects folded to channels";
     g.setColour (theme::text2);
     g.setFont (theme::font (12.0f));
-    g.drawFittedText ("Cinema 1 - 308 seats - " + info, 424, 10, 330, 40, Justification::centredLeft, 2, 1.0f);
+    g.drawFittedText ("Hall: " + info, 424, 8, 336, 22, Justification::centredLeft, 1, 0.8f);
+    g.setColour (theme::dim);
+    g.setFont (theme::font (11.0f));
+    g.drawFittedText ("Track: " + ed.proc.getLayoutDescription(), 424, 30, 336, 20, Justification::centredLeft, 1, 0.7f);
 
     // latency chip
     g.setColour (Colour (0xff0f1a16));
@@ -1277,25 +1356,87 @@ void TheatreEditor::refreshButtons()
 
 void TheatreEditor::readMeters (float dt)
 {
+    // IEC 60268-18 style peak meter: instant attack, 20 dB fall in 1.7 s, 2 s peak hold.
+    const float fall = 20.0f / 1.7f * dt;
+    auto toDb = [] (float v) { return v > 1.0e-7f ? 20.0f * std::log10 (v) : -140.0f; };
+
+    float srcPk = 0.0f;
+    std::array<float, hall::NumCh> rawTp {};
     for (int c = 0; c < hall::NumCh; ++c)
     {
         auto& m = proc.meters[(size_t) c];
         const float pk = m.peak.exchange (0.0f);
+        const float tp = m.truePeak.exchange (0.0f);
         const float ss = m.sumSq.exchange (0.0f);
         const int n = m.count.exchange (0);
+        rawTp[(size_t) c] = tp;
+        srcPk = jmax (srcPk, pk);
+        maxPeakLin = jmax (maxPeakLin, tp);
+        vs.maxTpDb[(size_t) c] = jmax (vs.maxTpDb[(size_t) c], toDb (tp));
+        const float ms = n > 0 ? ss / (float) n : 0.0f;
+        fastEnergy[(size_t) c] = ms > fastEnergy[(size_t) c] ? ms : 0.6f * fastEnergy[(size_t) c] + 0.4f * ms;
+        energy[(size_t) c] = 0.85f * energy[(size_t) c] + 0.15f * ms;
+
+        // The meters always show the real channels of the track
         vs.onBus[(size_t) c] = proc.channelPresent[(size_t) c].load();
-        const float db = pk > 1.0e-6f ? 20.0f * std::log10 (pk) : -90.0f;
+        const float db = vs.onBus[(size_t) c] ? toDb (tp) : -140.0f;
         auto& lv = vs.levelDb[(size_t) c];
-        lv = db > lv ? db : jmax (db, lv - 24.0f * dt);
+        if (db > lv + 3.0f) vs.chFlash[(size_t) c] = 1.0f;
+        lv = db > lv ? db : jmax (db, lv - fall);
+        vs.chFlash[(size_t) c] = jmax (0.0f, vs.chFlash[(size_t) c] - 4.0f * dt);
         auto& hold = vs.holdDb[(size_t) c];
         auto& ht = vs.holdTime[(size_t) c];
         if (lv >= hold) { hold = lv; ht = 0.0f; }
-        else { ht += dt; if (ht > 1.5f) hold = jmax (lv, hold - 12.0f * dt); }
-        maxPeakLin = jmax (maxPeakLin, pk);
-        const float ms = n > 0 ? ss / (float) n : 0.0f;
-        energy[(size_t) c] = 0.75f * energy[(size_t) c] + 0.25f * ms;
+        else { ht += dt; if (ht > 2.0f) hold = jmax (lv, hold - fall); }
     }
-    vs.maxPeak = maxPeakLin > 1.0e-6f ? 20.0f * std::log10 (maxPeakLin) : -90.0f;
+    vs.maxPeak = toDb (maxPeakLin);
+    const float srcDb = toDb (srcPk);
+
+    // Meter list: the channels actually on the track, in film order
+    vs.meterChannels.clear();
+    for (int c = 0; c < hall::NumCh; ++c)
+        if (vs.onBus[(size_t) c]) vs.meterChannels.push_back (c);
+
+    // What each hall channel plays: Track signal = the real channels; Panner = the track's audio
+    // rendered by Theatre's panner (same ballistics as the meters).
+    const auto chs = hall::formatChannels (vs.format);
+    for (int c = 0; c < hall::NumCh; ++c)
+    {
+        float db;
+        if (vs.trackSource)
+            db = toDb (rawTp[(size_t) c]);
+        else
+        {
+            const bool inFormat = std::find (chs.begin(), chs.end(), c) != chs.end();
+            const float e = vs.gains.chEnergy[(size_t) c];
+            db = (inFormat && e > 1.0e-9f) ? srcDb + 10.0f * std::log10 (e) : -140.0f;
+        }
+        auto& r = vs.renderDb[(size_t) c];
+        if (db > r + 3.0f) vs.renderFlash[(size_t) c] = 1.0f;
+        r = db > r ? db : jmax (db, r - fall);
+        vs.renderFlash[(size_t) c] = jmax (0.0f, vs.renderFlash[(size_t) c] - 4.0f * dt);
+    }
+
+    // Drive every speaker (and its sphere) from its channel
+    const auto& spk = vs.model.speakers;
+    vs.spkLive.resize (spk.size());
+    vs.spkFlash.resize (spk.size());
+    vs.wavePhase.resize (spk.size(), 0.0f);
+    for (size_t i = 0; i < spk.size(); ++i)
+    {
+        const int m = spk[i].ch == hall::LFE ? (vs.format == hall::FStereo ? -1 : (int) hall::LFE)
+                                             : hall::mapChannel (vs.format, spk[i].ch);
+        float k = 0.0f, fl = 0.0f;
+        if (m >= 0)
+        {
+            k = jlimit (0.0f, 1.0f, (vs.renderDb[(size_t) m] + 54.0f) / 48.0f);
+            fl = vs.renderFlash[(size_t) m];
+        }
+        vs.spkLive[i] = k;
+        vs.spkFlash[i] = fl * k;
+        vs.wavePhase[i] = std::fmod (vs.wavePhase[i] + dt * (0.6f + 1.4f * k), 1.0f);
+    }
+    vs.srcLevel = jlimit (0.0f, 1.0f, (srcDb + 54.0f) / 48.0f);
 }
 
 void TheatreEditor::updateLoudness()
@@ -1352,7 +1493,6 @@ void TheatreEditor::timerCallback()
     vs.trackSource = (int) a.getRawParameterValue ("source")->load() == 1;
     vs.object = (int) a.getRawParameterValue ("mode")->load() == 1;
     vs.format = vs.trackSource ? proc.busFormat.load() : (int) a.getRawParameterValue ("monitor")->load();
-    vs.meterChannels = hall::formatChannels (vs.format);
 
     if (vs.fly && ! vs.trackSource)
     {
@@ -1372,19 +1512,23 @@ void TheatreEditor::timerCallback()
     vs.pitch += (vs.tPitch - vs.pitch) * k;
     vs.zoom += (vs.tZoom - vs.zoom) * k;
 
-    readMeters (dt);
-    updateLoudness();
-
     if (vs.trackSource)
     {
-        if (tick % 3 == 0 || covKey.isEmpty())
+        // The sound's position follows the live channel energies (fast), the seat map updates ~10x a second
+        vs.gains = vs.model.fromChannelEnergy (vs.format, fastEnergy);
+        float tot = 0; for (auto e : fastEnergy) tot += e;
+        if (tot > 1.0e-9f)
         {
-            vs.gains = vs.model.fromChannelEnergy (vs.format, energy);
-            const auto est = vs.model.estimatePan (vs.format, energy);
-            vs.px = est.x; vs.py = est.y; vs.pz = est.z;
-            vs.srcM = hall::panToMetres (vs.px, vs.py, vs.pz);
-            vs.cov = vs.model.coverage (vs.gains, vs.srcM);
-            vs.seatRes = vs.model.analyseSeat (vs.gains, vs.model.seats[(size_t) vs.seat], vs.srcM, true);
+            const auto est = vs.model.estimatePan (vs.format, fastEnergy);
+            const float e = 1.0f - std::exp (-dt * 10.0f);
+            vs.px += (est.x - vs.px) * e; vs.py += (est.y - vs.py) * e; vs.pz += (est.z - vs.pz) * e;
+        }
+        vs.srcM = hall::panToMetres (vs.px, vs.py, vs.pz);
+        if (tick % 6 == 0 || covKey != "track")
+        {
+            const auto slow = vs.model.fromChannelEnergy (vs.format, energy);
+            vs.cov = vs.model.coverage (slow, vs.srcM);
+            vs.seatRes = vs.model.analyseSeat (slow, vs.model.seats[(size_t) vs.seat], vs.srcM, true);
             covKey = "track";
         }
     }
@@ -1396,15 +1540,32 @@ void TheatreEditor::timerCallback()
         {
             vs.gains = vs.model.panner (vs.format, vs.object, vs.px, vs.py, vs.pz, vs.size);
             vs.srcM = hall::panToMetres (vs.px, vs.py, vs.pz);
-            vs.cov = vs.model.coverage (vs.gains, vs.srcM);
-            vs.seatRes = vs.model.analyseSeat (vs.gains, vs.model.seats[(size_t) vs.seat], vs.srcM, true);
-            covKey = key;
+            if (tick - lastCovTick >= 4 || ! vs.fly)
+            {
+                vs.cov = vs.model.coverage (vs.gains, vs.srcM);
+                vs.seatRes = vs.model.analyseSeat (vs.gains, vs.model.seats[(size_t) vs.seat], vs.srcM, true);
+                lastCovTick = tick;
+                covKey = key;
+            }
         }
+    }
+
+    readMeters (dt);
+    updateLoudness();
+
+    // Trail of where the sound has been (shows it travelling from speaker to speaker)
+    if (tick % 2 == 0)
+    {
+        if (vs.srcLevel > 0.02f)
+            vs.trail.push_back ({ vs.srcM.x, vs.srcM.y, vs.srcM.z });
+        else if (! vs.trail.empty())
+            vs.trail.erase (vs.trail.begin());
+        while (vs.trail.size() > 36) vs.trail.erase (vs.trail.begin());
     }
 
     refreshButtons();
     saveUi();
-    root.repaint (0, 0, W, 60);
+    root.repaint (0, 0, LW, 60);
     if (tab == 0) plan.repaint(); else hall3d.repaint();
     meters.repaint();
     sound.repaint();

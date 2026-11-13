@@ -59,13 +59,21 @@ struct ViewState
     bool orbit = false, fly = false, signal = false;
 
     std::vector<int> meterChannels;
-    std::array<float, hall::NumCh> levelDb = filled (-90.0f), holdDb = filled (-90.0f), holdTime {};
+    std::array<float, hall::NumCh> levelDb = filled (-140.0f), holdDb = filled (-140.0f), holdTime {};
     static std::array<float, hall::NumCh> filled (float v) { std::array<float, hall::NumCh> a; a.fill (v); return a; }
     std::array<bool, hall::NumCh> onBus {};
     float lufsM = -70, lufsS = -70, lufsI = -70, maxPeak = -70;
 
+    // Live, meter-driven animation state
+    std::vector<float> spkLive, spkFlash, wavePhase;
+    std::array<float, hall::NumCh> chFlash {}, renderFlash {};
+    std::array<float, hall::NumCh> renderDb = filled (-140.0f), maxTpDb = filled (-140.0f);
+    std::vector<hall::Vec3> trail;
+    float srcLevel = 0;
+
     float spkIntensity (size_t i) const
     {
+        if (i < spkLive.size()) return spkLive[i];
         const float g = gains.spk.empty() ? 0.0f : gains.spk[i];
         if (g <= 0.0f) return 0.0f;
         return juce::jlimit (0.0f, 1.0f, 1.0f + 20.0f * std::log10 (g) / 30.0f);
@@ -140,7 +148,7 @@ class MeterPanel : public juce::Component
 public:
     explicit MeterPanel (ViewState& v) : vs (v) { addAndMakeVisible (resetBtn); }
     void paint (juce::Graphics&) override;
-    void resized() override { resetBtn.setBounds (getWidth() - 74, getHeight() - 34, 60, 24); }
+    void resized() override { resetBtn.setBounds (getWidth() - 66, 8, 54, 22); }
     juce::TextButton resetBtn { "Reset" };
 private:
     ViewState& vs;
@@ -219,13 +227,15 @@ private:
     juce::String covKey;
     int tick = 0;
     double lastTime = 0;
-    std::array<float, hall::NumCh> energy {};
+    std::array<float, hall::NumCh> energy {}, fastEnergy {};
+    int lastCovTick = 0;
     std::vector<float> loud100;        // recent 100 ms blocks
     std::vector<float> gated400;       // 400 ms block energies above the absolute gate
     float maxPeakLin = 0;
     juce::ComponentBoundsConstrainer constrainer;
 
-    static constexpr int W = 1360, H = 860;
+    static constexpr int W = 1360, H = 860;   // minimum logical size
+    int LW = W;                                // logical width, follows the screen shape
     friend class Root;
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TheatreEditor)
 };

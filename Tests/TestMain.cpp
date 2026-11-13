@@ -109,6 +109,77 @@ int main (int argc, char** argv)
         check (std::abs (L + 3.01) < 0.1, "BS.1770 calibration within 0.1 LU");
     }
 
+    // LFE and layouts: unlabelled 12-channel track (as some DAWs provide) and labelled 5.1
+    {
+        std::unique_ptr<TheatreProcessor> q (static_cast<TheatreProcessor*> (createPluginFilter()));
+        AudioProcessor::BusesLayout d12;
+        d12.inputBuses.add (AudioChannelSet::discreteChannels (12));
+        d12.outputBuses.add (AudioChannelSet::discreteChannels (12));
+        check (q->checkBusesLayoutSupported (d12), "unlabelled 12-channel track accepted");
+        q->setBusesLayout (d12);
+        q->prepareToPlay (sr, bs);
+        check (q->busFormat.load() == hall::F714, "unlabelled 12 ch read as 7.1.4");
+        AudioBuffer<float> b12 (12, bs);
+        b12.clear();
+        for (int n = 0; n < bs; ++n) b12.setSample (3, n, 0.25f * (float) std::sin (2.0 * MathConstants<double>::pi * 60.0 * n / sr));
+        q->processBlock (b12, midi);
+        check (q->meters[hall::LFE].peak.load() > 0.2f, "LFE (channel 4) detected on unlabelled 12 ch");
+        check (q->meters[hall::L].peak.load() == 0.0f && q->meters[hall::Ls].peak.load() == 0.0f, "no leakage into other meters");
+
+        std::unique_ptr<TheatreProcessor> r (static_cast<TheatreProcessor*> (createPluginFilter()));
+        AudioProcessor::BusesLayout l51;
+        l51.inputBuses.add (AudioChannelSet::create5point1());
+        l51.outputBuses.add (AudioChannelSet::create5point1());
+        r->setBusesLayout (l51);
+        r->prepareToPlay (sr, bs);
+        const int iLfe = AudioChannelSet::create5point1().getChannelIndexForType (AudioChannelSet::LFE);
+        AudioBuffer<float> b6 (6, bs);
+        b6.clear();
+        for (int n = 0; n < bs; ++n) b6.setSample (iLfe, n, 0.5f);
+        r->processBlock (b6, midi);
+        check (std::abs (r->meters[hall::LFE].peak.load() - 0.5f) < 1.0e-4f, "LFE detected on labelled 5.1");
+
+        AudioProcessor::BusesLayout l712;
+        l712.inputBuses.add (AudioChannelSet::create7point1point2());
+        l712.outputBuses.add (AudioChannelSet::create7point1point2());
+        check (q->checkBusesLayoutSupported (l712), "7.1.2 accepted");
+    }
+
+    // True peak: a sine at fs/4 sampled 45 degrees off its crest has sample peaks of 0.707 but a true peak of 1.0
+    {
+        std::unique_ptr<TheatreProcessor> q (static_cast<TheatreProcessor*> (createPluginFilter()));
+        q->prepareToPlay (sr, bs);
+        AudioBuffer<float> sb (2, bs);
+        for (int b = 0; b < 20; ++b)
+        {
+            for (int n = 0; n < bs; ++n)
+                sb.setSample (0, n, (float) std::sin (MathConstants<double>::halfPi * (double) (b * bs + n) + MathConstants<double>::pi / 4.0));
+            sb.clear (1, 0, bs);
+            q->processBlock (sb, midi);
+        }
+        const float spk = 20.0f * std::log10 (q->meters[hall::L].peak.load());
+        const float tpk = 20.0f * std::log10 (q->meters[hall::L].truePeak.load());
+        std::cout << "      fs/4 sine: sample peak " << spk << " dBFS, true peak " << tpk << " dBTP (expected -3.01 / 0.00)" << std::endl;
+        check (std::abs (spk + 3.01f) < 0.05f, "sample peak reads -3.01 dBFS");
+        check (std::abs (tpk) < 0.3f, "true peak reads 0 dBTP within 0.3 dB");
+    }
+    // True peak never over-reads a plain 1 kHz sine at -6 dBFS
+    {
+        std::unique_ptr<TheatreProcessor> q (static_cast<TheatreProcessor*> (createPluginFilter()));
+        q->prepareToPlay (sr, bs);
+        AudioBuffer<float> sb (2, bs);
+        for (int b = 0; b < 20; ++b)
+        {
+            for (int n = 0; n < bs; ++n)
+                sb.setSample (0, n, 0.5f * (float) std::sin (2.0 * MathConstants<double>::pi * 1000.0 * (double) (b * bs + n) / sr));
+            sb.clear (1, 0, bs);
+            q->processBlock (sb, midi);
+        }
+        const float tpk = 20.0f * std::log10 (q->meters[hall::L].truePeak.load());
+        std::cout << "      1 kHz -6 dBFS sine: true peak " << tpk << " dBTP" << std::endl;
+        check (std::abs (tpk + 6.02f) < 0.1f, "1 kHz sine at -6 dBFS reads -6.0 dBTP");
+    }
+
     // Model sanity
     {
         hall::Model m;
@@ -136,7 +207,7 @@ int main (int argc, char** argv)
     // Editor rendering
     {
         std::unique_ptr<TheatreEditor> ed (static_cast<TheatreEditor*> (p->createEditor()));
-        ed->setSize (TheatreEditor::W, TheatreEditor::H);
+        ed->setSize (ed->LW, TheatreEditor::H);
         auto snap = [&] (const String& name)
         {
             for (int i = 0; i < 6; ++i) ed->timerCallback();
@@ -161,6 +232,39 @@ int main (int argc, char** argv)
         ed->setTab (0);
         ed->vs.show = 1;
         snap ("theatre_plan_bed.png");
+        // Live animation: sound travels L -> Lss -> Lrs -> Ltr on a 7.1.4 track (Track signal)
+        ed->setChoice ("source", 1);
+        ed->vs.show = 0;
+        ed->setTab (1);
+        ed->hall3d.setCamera (0); ed->vs.yaw = ed->vs.tYaw; ed->vs.pitch = ed->vs.tPitch;
+        const AudioChannelSet::ChannelType path[] = { AudioChannelSet::left, AudioChannelSet::leftSurroundSide,
+                                                      AudioChannelSet::leftSurroundRear, AudioChannelSet::topRearLeft };
+        const char* names[] = { "L", "Lss", "Lrs", "Ltr" };
+        for (int step = 0; step < 4; ++step)
+        {
+            const int ci = set.getChannelIndexForType (path[step]);
+            for (int fr = 0; fr < 120; ++fr)    // ~2 s of real time per position
+            {
+                Thread::sleep (16);
+                for (int b = 0; b < 2; ++b)
+                {
+                    buf.clear();
+                    for (int n = 0; n < bs; ++n) buf.setSample (ci, n, (rng.nextFloat() * 2.0f - 1.0f) * 0.5f);
+                    p->processBlock (buf, midi);
+                }
+                ed->timerCallback();
+            }
+            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
+            File f = outDir.getChildFile (String ("theatre_live_") + names[step] + ".png");
+            f.deleteFile();
+            FileOutputStream os (f);
+            PNGImageFormat().writeImageToStream (img, os);
+            int loudest = 0;
+            for (size_t i = 0; i < ed->vs.spkLive.size(); ++i) if (ed->vs.spkLive[i] > ed->vs.spkLive[(size_t) loudest]) loudest = (int) i;
+            const auto id = ed->vs.model.speakers[(size_t) loudest].id;
+            check (id.startsWith (step == 0 ? "L" : step == 1 ? "Ls" : step == 2 ? "Lrs" : "Ltr"),
+                   String ("live sphere follows the sound to ") + names[step] + " (loudest: " + id + ")");
+        }
         check (true, "editor rendered");
     }
 
