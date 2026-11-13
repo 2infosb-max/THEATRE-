@@ -41,6 +41,7 @@ int main (int argc, char** argv)
     check (p->setBusesLayout (l714), "set 7.1.4");
     check (p->busFormat.load() == hall::F714, "bus format detected as 7.1.4");
 
+    p->apvts.getParameter ("order")->setValueNotifyingHost (p->apvts.getParameter ("order")->convertTo0to1 (2.0f));
     const double sr = 48000.0;
     const int bs = 512;
     p->prepareToPlay (sr, bs);
@@ -116,6 +117,7 @@ int main (int argc, char** argv)
         d12.inputBuses.add (AudioChannelSet::discreteChannels (12));
         d12.outputBuses.add (AudioChannelSet::discreteChannels (12));
         check (q->checkBusesLayoutSupported (d12), "unlabelled 12-channel track accepted");
+        q->apvts.getParameter ("order")->setValueNotifyingHost (q->apvts.getParameter ("order")->convertTo0to1 (1.0f));
         q->setBusesLayout (d12);
         q->prepareToPlay (sr, bs);
         check (q->busFormat.load() == hall::F714, "unlabelled 12 ch read as 7.1.4");
@@ -130,6 +132,7 @@ int main (int argc, char** argv)
         AudioProcessor::BusesLayout l51;
         l51.inputBuses.add (AudioChannelSet::create5point1());
         l51.outputBuses.add (AudioChannelSet::create5point1());
+        r->apvts.getParameter ("order")->setValueNotifyingHost (r->apvts.getParameter ("order")->convertTo0to1 (2.0f));
         r->setBusesLayout (l51);
         r->prepareToPlay (sr, bs);
         const int iLfe = AudioChannelSet::create5point1().getChannelIndexForType (AudioChannelSet::LFE);
@@ -204,116 +207,133 @@ int main (int argc, char** argv)
         check (std::abs (cv.rel[(size_t) m.mixSeat]) < 1.0e-3f, "mix seat is the 0 dB reference");
     }
 
-    // Editor rendering
+    // ---- Channel order: Pro Tools / film (your case: 7.1 track, signal on L, R and LFE) ----
     {
-        std::unique_ptr<TheatreEditor> ed (static_cast<TheatreEditor*> (p->createEditor()));
+        std::unique_ptr<TheatreProcessor> q (static_cast<TheatreProcessor*> (createPluginFilter()));
+        AudioProcessor::BusesLayout l71;
+        l71.inputBuses.add (AudioChannelSet::create7point1());
+        l71.outputBuses.add (AudioChannelSet::create7point1());
+        q->setBusesLayout (l71);
+        q->prepareToPlay (sr, bs);
+        check ((int) q->apvts.getRawParameterValue ("order")->load() == 0, "default channel order is Pro Tools / Film");
+        // Pro Tools 7.1 order: 1 L, 2 C, 3 R, 4 Lss, 5 Rss, 6 Lsr, 7 Rsr, 8 LFE
+        AudioBuffer<float> b8 (8, bs);
+        b8.clear();
+        for (int n = 0; n < bs; ++n) { b8.setSample (0, n, 0.5f); b8.setSample (2, n, 0.25f); b8.setSample (7, n, 0.125f); }
+        q->processBlock (b8, midi);
+        auto pk = [&] (int c) { return q->meters[(size_t) c].peak.load(); };
+        check (std::abs (pk (hall::L) - 0.5f) < 1e-4f, "film order: track ch 1 -> L meter");
+        check (std::abs (pk (hall::R) - 0.25f) < 1e-4f, "film order: track ch 3 -> R meter");
+        check (std::abs (pk (hall::LFE) - 0.125f) < 1e-4f, "film order: track ch 8 -> LFE meter");
+        check (pk (hall::C) == 0.0f && pk (hall::Rrs) == 0.0f, "film order: nothing on C or Rrs");
+        std::cout << "      track: " << q->getLayoutDescription() << std::endl;
+
+        // Switch to SMPTE and back
+        q->apvts.getParameter ("order")->setValueNotifyingHost (q->apvts.getParameter ("order")->convertTo0to1 (1.0f));
+        for (auto& m : q->meters) m.peak.store (0.0f);
+        q->processBlock (b8, midi);
+        check (std::abs (pk (hall::C) - 0.25f) < 1e-4f && std::abs (pk (hall::Rrs) - 0.125f) < 1e-4f, "SMPTE order reads ch 3 as C and ch 8 as Rrs");
+
+        // Pro Tools 7.1.4: L C R Lss Rss Lsr Rsr LFE Ltf Rtf Ltr Rtr
+        std::unique_ptr<TheatreProcessor> r (static_cast<TheatreProcessor*> (createPluginFilter()));
+        r->setBusesLayout (l714);
+        r->prepareToPlay (sr, bs);
+        AudioBuffer<float> b12 (12, bs);
+        for (int ch = 0; ch < 12; ++ch)
+        {
+            b12.clear();
+            for (int n = 0; n < bs; ++n) b12.setSample (ch, n, 0.5f);
+            for (auto& m : r->meters) m.peak.store (0.0f);
+            r->processBlock (b12, midi);
+            static const int expect[] = { hall::L, hall::C, hall::R, hall::Ls, hall::Rs, hall::Lrs, hall::Rrs, hall::LFE,
+                                          hall::Ltf, hall::Rtf, hall::Ltr, hall::Rtr };
+            int lit = -1; int count = 0;
+            for (int c = 0; c < hall::NumCh; ++c) if (r->meters[(size_t) c].peak.load() > 0.0f) { lit = c; ++count; }
+            check (count == 1 && lit == expect[ch], String ("Pro Tools 7.1.4: track ch ") + String (ch + 1) + " -> " + hall::chName (expect[ch]));
+        }
+    }
+
+    // ---- Editor ----
+    {
+        std::unique_ptr<TheatreProcessor> fresh (static_cast<TheatreProcessor*> (createPluginFilter()));
+        fresh->setBusesLayout (l714);
+        fresh->prepareToPlay (sr, bs);
+        std::unique_ptr<TheatreEditor> ed (static_cast<TheatreEditor*> (fresh->createEditor()));
         ed->setSize (ed->LW, TheatreEditor::H);
+        for (int i = 0; i < 5; ++i) ed->timerCallback();
+        bool allZero = true;
+        for (auto k : ed->vs.spkLive) if (k > 0.0f) allZero = false;
+        check (allZero, "on opening: no speaker or sphere is lit");
+        check (! ed->vs.hasSignal, "on opening: mix position shows no values");
+        check (ed->vs.meterChannels.size() == 12, "12 meters for a 7.1.4 track");
         auto snap = [&] (const String& name)
         {
-            for (int i = 0; i < 6; ++i) ed->timerCallback();
             auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
             File f = outDir.getChildFile (name);
             f.deleteFile();
             FileOutputStream os (f);
             PNGImageFormat().writeImageToStream (img, os);
-            std::cout << "      wrote " << f.getFullPathName() << std::endl;
         };
-        // Opening state: nothing is shown until audio arrives
+        snap ("v6_open.png");
+
+        // Pro Tools 7.1.4 track, signal on L and R (equal) + LFE: the sound must sit at the screen centre
+        AudioBuffer<float> b (12, bs);
+        for (int fr = 0; fr < 60; ++fr)
         {
-            std::unique_ptr<TheatreProcessor> fresh (static_cast<TheatreProcessor*> (createPluginFilter()));
-            fresh->setBusesLayout (l714);
-            fresh->prepareToPlay (sr, bs);
-            std::unique_ptr<TheatreEditor> e2 (static_cast<TheatreEditor*> (fresh->createEditor()));
-            e2->setSize (e2->LW, TheatreEditor::H);
-            for (int i = 0; i < 5; ++i) e2->timerCallback();
-            bool allZero = true;
-            for (auto k : e2->vs.spkLive) if (k > 0.0f) allZero = false;
-            check (allZero, "on opening: no speaker or sphere is lit");
-            check (! e2->vs.hasSignal, "on opening: no signal, seat check shows no values");
-            bool metersEmpty = true;
-            for (auto c : e2->vs.meterChannels) if (e2->vs.levelDb[(size_t) c] > -100.0f) metersEmpty = false;
-            check (metersEmpty && e2->vs.meterChannels.size() == 12, "on opening: all 12 meters empty");
-            check ((int) fresh->apvts.getRawParameterValue ("source")->load() == 1, "default source is Track signal");
-            auto img = e2->createComponentSnapshot (e2->getLocalBounds(), true, 1.0f);
-            File f = outDir.getChildFile ("theatre_open_state.png");
-            f.deleteFile();
-            FileOutputStream os (f);
-            PNGImageFormat().writeImageToStream (img, os);
-        }
-        ed->setChoice ("source", 0);
-        ed->setTab (1);
-        snap ("theatre_3d_714.png");
-        ed->vs.show = 1;
-        ed->hall3d.setCamera (1); ed->vs.yaw = ed->vs.tYaw; ed->vs.pitch = ed->vs.tPitch;
-        snap ("theatre_3d_side_both.png");
-        ed->vs.show = 0;
-        ed->setChoice ("monitor", 2);
-        ed->hall3d.setCamera (0); ed->vs.yaw = ed->vs.tYaw; ed->vs.pitch = ed->vs.tPitch;
-        snap ("theatre_3d_51.png");
-        ed->setChoice ("monitor", 0);
-        ed->setChoice ("mode", 0);
-        ed->setTab (0);
-        ed->vs.show = 1;
-        snap ("theatre_plan_bed.png");
-        // Live animation: sound travels L -> Lss -> Lrs -> Ltr on a 7.1.4 track (Track signal)
-        ed->setChoice ("source", 1);
-        ed->vs.show = 0;
-        ed->setTab (1);
-        ed->hall3d.setCamera (0); ed->vs.yaw = ed->vs.tYaw; ed->vs.pitch = ed->vs.tPitch;
-        const AudioChannelSet::ChannelType path[] = { AudioChannelSet::left, AudioChannelSet::leftSurroundSide,
-                                                      AudioChannelSet::leftSurroundRear, AudioChannelSet::topRearLeft };
-        const char* names[] = { "L", "Lss", "Lrs", "Ltr" };
-        for (int step = 0; step < 4; ++step)
-        {
-            const int ci = set.getChannelIndexForType (path[step]);
-            for (int fr = 0; fr < 120; ++fr)    // ~2 s of real time per position
+            Thread::sleep (16);
+            for (int k = 0; k < 2; ++k)
             {
-                Thread::sleep (16);
-                for (int b = 0; b < 2; ++b)
+                b.clear();
+                for (int n = 0; n < bs; ++n)
                 {
-                    buf.clear();
-                    for (int n = 0; n < bs; ++n) buf.setSample (ci, n, (rng.nextFloat() * 2.0f - 1.0f) * 0.5f);
-                    p->processBlock (buf, midi);
+                    const float v = (rng.nextFloat() * 2.0f - 1.0f) * 0.4f;
+                    b.setSample (0, n, v); b.setSample (2, n, v); b.setSample (7, n, 0.2f * v);
                 }
-                ed->timerCallback();
+                fresh->processBlock (b, midi);
             }
-            auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 1.0f);
-            File f = outDir.getChildFile (String ("theatre_live_") + names[step] + ".png");
-            f.deleteFile();
-            FileOutputStream os (f);
-            PNGImageFormat().writeImageToStream (img, os);
-            int loudest = 0;
-            for (size_t i = 0; i < ed->vs.spkLive.size(); ++i) if (ed->vs.spkLive[i] > ed->vs.spkLive[(size_t) loudest]) loudest = (int) i;
-            const auto id = ed->vs.model.speakers[(size_t) loudest].id;
-            check (id.startsWith (step == 0 ? "L" : step == 1 ? "Ls" : step == 2 ? "Lrs" : "Ltr"),
-                   String ("live sphere follows the sound to ") + names[step] + " (loudest: " + id + ")");
+            ed->timerCallback();
         }
-        // Frame cost at full-screen Retina size (2880 x 1800 pixels)
+        auto& V = ed->vs;
+        std::cout << "      sound image at x=" << V.image.x << " y=" << V.image.y << " z=" << V.image.z << std::endl;
+        check (std::abs (V.image.x) < 0.3f && V.image.y < 1.0f, "L+R equal -> sound at the screen centre");
+        check (std::abs (V.levelDb[hall::L] - V.levelDb[hall::R]) < 2.0f && V.levelDb[hall::C] < -100.0f, "meters: L and R lit, C dark");
+        check (V.levelDb[hall::LFE] > -40.0f, "meters: LFE lit");
+        float subK = 0; for (size_t i = 0; i < V.model.speakers.size(); ++i) if (V.model.speakers[i].ch == hall::LFE) subK = jmax (subK, V.spkLive[i]);
+        check (subK > 0.1f, "LFE spheres lit at the subs");
+        check (V.mix.dominant >= 0 && std::abs (std::atan2 (V.image.x - V.model.seats[(size_t) V.model.mixSeat].x,
+                                                           -(V.image.y - V.model.seats[(size_t) V.model.mixSeat].y))) < 0.1f,
+               "mix position hears it straight ahead");
+        ed->setTab (1);
+        ed->hall3d.setCamera (0); V.yaw = V.tYaw; V.pitch = V.tPitch; V.zoom = V.tZoom;
+        snap ("v6_LR_3d.png");
+        ed->setTab (0);
+        snap ("v6_LR_plan.png");
+
+        // Moving to the rear left (Lsr = track ch 6)
+        for (int fr = 0; fr < 120; ++fr)
         {
-            ed->setSize (roundToInt (1440.0 * ed->LW / 860.0 * 860.0 / 900.0 * 900.0 / 1440.0 * 1440.0 / ed->LW * ed->LW / 860.0 * 0 + 1440.0 * (double) ed->LW / (double) ed->LW), 856);
-            ed->setSize (roundToInt (856.0 * ed->LW / 860.0), 856);
-            const double t0 = Time::getMillisecondCounterHiRes();
-            for (int i = 0; i < 10; ++i)
+            Thread::sleep (16);
+            for (int k = 0; k < 2; ++k)
             {
-                ed->timerCallback();
-                auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+                b.clear();
+                for (int n = 0; n < bs; ++n) b.setSample (5, n, (rng.nextFloat() * 2.0f - 1.0f) * 0.4f);
+                fresh->processBlock (b, midi);
             }
-            const double ms = (Time::getMillisecondCounterHiRes() - t0) / 10.0;
-            std::cout << "      full-screen retina frame: " << ms << " ms" << std::endl;
-            auto timeIt = [&] (Component& c, const char* name)
-            {
-                const double a0 = Time::getMillisecondCounterHiRes();
-                for (int i = 0; i < 10; ++i) { auto im = c.createComponentSnapshot (c.getLocalBounds(), true, 2.0f * ed->getHeight() / 860.0f); }
-                std::cout << "        " << name << ": " << (Time::getMillisecondCounterHiRes() - a0) / 10.0 << " ms" << std::endl;
-            };
-            timeIt (ed->hall3d, "3D hall (spheres)");
-            ed->vs.show = 2; timeIt (ed->hall3d, "3D hall (seat heat only)"); ed->vs.show = 0;
-            timeIt (ed->meters, "meters");
-            timeIt (ed->seatPanel, "seat panel");
-            timeIt (ed->sound, "sound panel");
-            ed->setTab (0); timeIt (ed->plan, "plan view"); ed->setTab (1);
+            ed->timerCallback();
         }
-        check (true, "editor rendered");
+        int loudest = 0;
+        for (size_t i = 0; i < V.spkLive.size(); ++i) if (V.spkLive[i] > V.spkLive[(size_t) loudest]) loudest = (int) i;
+        check (V.model.speakers[(size_t) loudest].ch == hall::Lrs, "track ch 6 (Lsr) lights the Lrs speakers (" + V.model.speakers[(size_t) loudest].id + ")");
+        ed->setTab (1);
+        ed->hall3d.setCamera (1); V.yaw = V.tYaw; V.pitch = V.tPitch; V.zoom = V.tZoom;
+        snap ("v6_Lrs_side.png");
+
+        // Monitoring fold-down: 7.1.4 content heard on 5.1 -> rear goes to the side surrounds
+        ed->setChoice ("monitor", 3);
+        ed->timerCallback();
+        check (V.format == hall::F51, "monitoring 5.1 selected");
+        float lsK = 0; for (size_t i = 0; i < V.model.speakers.size(); ++i) if (V.model.speakers[i].ch == hall::Ls) lsK = jmax (lsK, V.spkLive[i]);
+        check (lsK > 0.1f, "5.1 monitoring: Lrs content plays on the left surround array");
     }
 
     std::cout << (failures == 0 ? "ALL PASSED" : (String (failures) + " FAILED").toStdString()) << std::endl;

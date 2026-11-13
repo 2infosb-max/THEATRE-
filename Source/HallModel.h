@@ -78,6 +78,27 @@ namespace hall
         }
     }
 
+    // Fold a track's per-channel energies into a (smaller) monitoring format.
+    // 7.1: heights fold into the wall surrounds (-3 dB); 5.1: rears join the sides; stereo: centre and
+    // surrounds split -3 dB to their side, LFE dropped. Same or bigger format: unchanged.
+    inline std::array<float, NumCh> foldEnergy (const std::array<float, NumCh>& e, int f)
+    {
+        std::array<float, NumCh> o = e;
+        if (f == F714) return o;
+        // heights -> wall surrounds
+        o[Ls]  += 0.5f * o[Ltf]; o[Rs]  += 0.5f * o[Rtf];
+        o[Lrs] += 0.5f * o[Ltr]; o[Rrs] += 0.5f * o[Rtr];
+        o[Ltf] = o[Rtf] = o[Ltr] = o[Rtr] = 0.0f;
+        if (f == F71) return o;
+        o[Ls] += o[Lrs]; o[Rs] += o[Rrs];
+        o[Lrs] = o[Rrs] = 0.0f;
+        if (f == F51) return o;
+        o[L] += 0.5f * o[C] + 0.5f * o[Ls];
+        o[R] += 0.5f * o[C] + 0.5f * o[Rs];
+        o[C] = o[Ls] = o[Rs] = o[LFE] = 0.0f;
+        return o;
+    }
+
     enum class SpkType { Screen, Sub, Wall, Rear, Top };
 
     struct Speaker
@@ -270,6 +291,23 @@ namespace hall
                         G.spk[i] = std::sqrt ((float) (energy[LFE] / tot) * 0.5f);
             computeChannelEnergy (f, G);
             return G;
+        }
+
+        // Where the sound appears: energy-weighted centre of the speakers that play it (LFE excluded)
+        Vec3 phantomImage (const Gains& G, bool& ok) const
+        {
+            Vec3 acc; double tot = 0;
+            for (size_t i = 0; i < speakers.size(); ++i)
+            {
+                const auto& s = speakers[i];
+                if (s.ch == LFE) continue;
+                const double w = (double) G.spk[i] * G.spk[i];
+                acc.x += (float) (s.x * w); acc.y += (float) (s.y * w); acc.z += (float) (s.z * w);
+                tot += w;
+            }
+            ok = tot > 1.0e-12;
+            if (! ok) return { 0, 0.3f, 4.5f };
+            return { (float) (acc.x / tot), (float) (acc.y / tot), (float) (acc.z / tot) };
         }
 
         // Estimated panned position from channel energies (for the "Track signal" source)

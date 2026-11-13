@@ -55,6 +55,7 @@ public:
     // Format implied by the track's channels (hall::Format)
     std::atomic<int> busFormat { hall::FStereo };
     juce::String getLayoutDescription() const;
+    int trackChannelFor (int hallCh) const;   // which track channel (0-based) feeds a hall channel, -1 if none
 
     // 100 ms K-weighted energy blocks for loudness (single producer / single consumer)
     juce::AbstractFifo loudFifo { 1024 };
@@ -74,8 +75,8 @@ private:
 
     std::array<int, maxCh> chMap {};   // bus channel index -> hall::Ch (-1 = not metered)
     int numMapped = 0;
-    juce::String layoutName;
     mutable juce::SpinLock layoutLock;
+    int lastOrder = -1;
 
     struct Biquad { double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0; };
     Biquad shelf, highpass;

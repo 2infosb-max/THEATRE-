@@ -16,24 +16,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout TheatreProcessor::createLayo
 {
     using namespace juce;
     std::vector<std::unique_ptr<RangedAudioParameter>> p;
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "x", 1 }, "Left-Right",
-                    NormalisableRange<float> (-1.0f, 1.0f, 0.001f), -0.35f));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "y", 1 }, "Screen-Rear",
-                    NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.55f));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "z", 1 }, "Height",
-                    NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.30f));
-    p.push_back (std::make_unique<AudioParameterFloat> (ParameterID { "size", 1 }, "Size",
-                    NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.30f));
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "mode", 1 }, "Render as",
-                    StringArray { "Bed", "Object" }, 1));
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "monitor", 1 }, "Monitoring",
-                    StringArray { "7.1.4", "7.1", "5.1", "Stereo" }, 0));
-    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "source", 1 }, "Source",
-                    StringArray { "Built-in panner", "Track signal" }, 1));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "monitor", 2 }, "Monitoring",
+                    StringArray { "Track", "7.1.4", "7.1", "5.1", "Stereo" }, 0));
+    p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "order", 2 }, "Channel order",
+                    StringArray { "Pro Tools / Film", "SMPTE / ITU", "Host labels" }, 0));
     return { p.begin(), p.end() };
 }
 
-// Map one channel type to the hall channel it feeds (-1 = not metered)
 static int mapType (juce::AudioChannelSet::ChannelType t)
 {
     using CT = juce::AudioChannelSet::ChannelType;
@@ -106,35 +95,55 @@ bool TheatreProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
     return in == out && layoutUsable (out);
 }
 
+// Standard channel orders
+static const int filmOrder[]  = { hall::L, hall::C, hall::R, hall::Ls, hall::Rs, hall::Lrs, hall::Rrs, hall::LFE,
+                                  hall::Ltf, hall::Rtf, hall::Ltr, hall::Rtr };   // Pro Tools / film
+static const int smpteOrder[] = { hall::L, hall::R, hall::C, hall::LFE, hall::Ls, hall::Rs, hall::Lrs, hall::Rrs,
+                                  hall::Ltf, hall::Rtf, hall::Ltr, hall::Rtr };   // SMPTE / ITU
+
 void TheatreProcessor::updateChannelMap()
 {
     const auto set = getChannelLayoutOfBus (true, 0);
+    const int order = (int) apvts.getRawParameterValue ("order")->load();
+    lastOrder = order;
     std::array<int, maxCh> map;
     map.fill (-1);
-    std::array<bool, hall::NumCh> present {};
     const int n = std::min (set.size(), maxCh);
     const bool discrete = set.isDiscreteLayout();
+
+    // 1. Which channels does the track have? (from its labels, or from its size if unlabelled)
+    std::array<bool, hall::NumCh> has {};
+    std::array<int, maxCh> byLabel;
+    byLabel.fill (-1);
     for (int i = 0; i < n; ++i)
     {
         const int c = discrete ? mapDiscrete (n, i) : mapType (set.getTypeOfChannel (i));
-        if (c >= 0 && ! present[(size_t) c]) { map[(size_t) i] = c; present[(size_t) c] = true; }
+        if (c >= 0 && ! has[(size_t) c]) { has[(size_t) c] = true; byLabel[(size_t) i] = c; }
     }
+
+    // 2. In which order do they arrive?
+    if (order == 2)
+        map = byLabel;
+    else
+    {
+        const int* ord = order == 0 ? filmOrder : smpteOrder;
+        int k = 0;
+        for (int o = 0; o < hall::NumCh && k < n; ++o)
+            if (has[(size_t) ord[o]]) map[(size_t) k++] = ord[o];
+    }
+
+    std::array<bool, hall::NumCh> present {};
+    for (int i = 0; i < n; ++i) if (map[(size_t) i] >= 0) present[(size_t) map[(size_t) i]] = true;
 
     int f = hall::FStereo;
     if (present[hall::Ltf] || present[hall::Ltr]) f = hall::F714;
     else if (present[hall::Lrs])                  f = hall::F71;
     else if (present[hall::Ls] || present[hall::LFE]) f = hall::F51;
 
-    juce::String desc;
-    juce::StringArray names;
-    for (int i = 0; i < n; ++i) if (map[(size_t) i] >= 0) names.add (hall::chName (map[(size_t) i]));
-    desc << n << " ch " << (discrete ? "(unlabelled, read as " : "(") << names.joinIntoString (" ") << ")";
-
     {
         const juce::SpinLock::ScopedLockType sl (layoutLock);
         chMap = map;
         numMapped = n;
-        layoutName = desc;
     }
     for (int c = 0; c < hall::NumCh; ++c) channelPresent[(size_t) c].store (present[(size_t) c]);
     busFormat.store (f);
@@ -142,8 +151,22 @@ void TheatreProcessor::updateChannelMap()
 
 juce::String TheatreProcessor::getLayoutDescription() const
 {
+    std::array<int, maxCh> map;
+    int n;
+    {
+        const juce::SpinLock::ScopedLockType sl (layoutLock);
+        map = chMap; n = numMapped;
+    }
+    juce::StringArray names;
+    for (int i = 0; i < n; ++i) names.add (map[(size_t) i] >= 0 ? hall::chName (map[(size_t) i]) : "-");
+    return juce::String (n) + " ch, channel 1-" + juce::String (n) + ": " + names.joinIntoString (" ");
+}
+
+int TheatreProcessor::trackChannelFor (int hallCh) const
+{
     const juce::SpinLock::ScopedLockType sl (layoutLock);
-    return layoutName;
+    for (int i = 0; i < numMapped; ++i) if (chMap[(size_t) i] == hallCh) return i;
+    return -1;
 }
 
 static double besselI0 (double x)
@@ -224,6 +247,8 @@ void TheatreProcessor::prepareToPlay (double sampleRate, int)
 void TheatreProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
 {
     juce::ScopedNoDenormals noDenormals;
+    if ((int) apvts.getRawParameterValue ("order")->load() != lastOrder)
+        updateChannelMap();
     // Pass-through: the audio is never modified. Only measurement happens here.
     const int numCh = std::min (buffer.getNumChannels(), numMapped);
     const int numSamples = buffer.getNumSamples();

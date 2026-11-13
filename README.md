@@ -4,16 +4,13 @@
 
 ## What it shows
 
-- **3D Hall (live):** a 20 × 26 × 9 m cinema with 308 tiered seats, a screen and 33 speakers. Every speaker gets a see-through **coverage sphere** that is driven by the same level as its channel meter: it grows, pulses, sends out wavefronts and fades with the audio. Beams show which speakers the sound is feeding right now, and a trail shows the path it has travelled from channel to channel. Spheres are blue for the screen, green for the surrounds, amber for the ceiling and violet for the subs.
-- **Plan view:** a top-down hall plan with seat colours (level compared with the mix seat), plus a side section for height.
-- **Monitoring:** 7.1.4 · 7.1 · 5.1 · Stereo. Only the speakers in that format play.
-- **Render as:** Bed (whole speaker arrays) or Object (individual speakers, blended between the wall layer and the ceiling layer by height).
-- **Source:**
-  - **Panner** — move the sound with Theatre's own controls (left–right, screen–rear, height, size). These can be automated.
-  - **Track signal** — Theatre reads the real level of each channel on the track or bus it is inserted on (5.1, 7.1 or 7.1.4) and shows that sound's coverage.
-- **Seat check:** pick any seat to see its level compared with the mix seat, how far the sound has moved away from where you panned it, which speaker reaches it first, and a plain-language verdict.
-- **Channel meters:** always show the real channels of the track. True-peak bars (4× oversampled, ITU-R BS.1770-4 method), IEC-style fall-back (20 dB in 1.7 s), 2 s peak hold, a max true-peak readout per channel (red at −1 dBTP and above), and Momentary / Short-term / Integrated LUFS (BS.1770 K-weighting, gated integrated). Works with labelled layouts (stereo, 5.1, 7.1, 7.1.2, 5.1.4, 7.1.4) and with unlabelled 6/8/10/12-channel tracks, which are read in the standard film order L R C LFE Ls Rs Lrs Rrs Ltf Rtf Ltr Rtr.
-- **Window:** opens filling your screen. Drag the corner to resize.
+- **3D Hall (live):** a 20 × 26 × 9 m cinema with 308 tiered seats, a screen and 33 speakers. Every speaker's **coverage sphere** follows its channel meter: it grows, pulses, sends out wavefronts and fades with the audio. Dots travel from every playing speaker to the **mix position**, and the **SOUND** marker shows where the mix position hears the sound (L + R equal = screen centre). Sphere colours: blue for the screen, green for the surrounds, amber for the ceiling, violet for the LFE.
+- **Plan view:** a top-down plan with seat colours (level compared with the mix position) and a side section for height.
+- **Mix position:** the direction and height of the sound as heard from the mix position (row I, centre), and where it comes from.
+- **Channel meters:** always show the track's real channels. True-peak bars (4× oversampled, ITU-R BS.1770-4 method), fall-back of 20 dB in 1.7 s, 2 s peak hold, a max true-peak number per channel (red at −1 dBTP and above), and Momentary / Short-term / Integrated LUFS.
+- **Channel order:** **Pro Tools / Film** (L C R Ls Rs Lrs Rrs LFE Ltf Rtf Ltr Rtr) is the default, which is right for Pro Tools, including through Blue Cat PatchWork. Choose **SMPTE / ITU** (L R C LFE Ls Rs …) for Nuendo, Logic, Reaper and similar, or **Use the host's channel labels**. The header shows which channel number Theatre reads as which speaker.
+- **Monitoring:** **Track** (the track's own format) or 7.1.4 · 7.1 · 5.1 · Stereo. Smaller formats fold the sound down: heights go to the wall surrounds, rears join the sides, and stereo takes everything into L and R.
+- Opens at zero: nothing lights up and no values are shown until audio plays.
 
 ## Install (no Terminal needed)
 
@@ -26,9 +23,9 @@
 
 ## Using it
 
-- Insert Theatre on a **5.1, 7.1 or 7.1.4** track or bus (or on stereo).
-- Choose **Track signal** to follow the real audio, or **Panner** to explore a position by hand.
-- Switch between **Plan view** and **3D Hall** with the tabs at the top. Drag the 3D hall to orbit around it and scroll to zoom.
+- Insert Theatre on a 5.1, 7.1 or 7.1.4 track or bus. In Pro Tools, host the AU in Blue Cat PatchWork.
+- Check the **Track:** line in the header. Send a test signal to one channel and make sure the right meter lights. If it doesn't, change **Channel order**.
+- Switch between **Plan view** and **3D Hall** with the tabs at the top. Drag the 3D hall to orbit it and scroll to zoom.
 
 ## Building from source
 
