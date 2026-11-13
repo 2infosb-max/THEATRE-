@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Theatre by Sound Brewery</title>
+    <welcome file="welcome.html" mime-type="text/html"/>
+    <options customize="allow" require-scripts="false" hostArchitectures="arm64,x86_64"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="vst3"/>
+        <line choice="au"/>
+    </choices-outline>
+    <choice id="vst3" title="Theatre VST3" description="For VST3 hosts (Nuendo, Cubase, Reaper, Studio One...)">
+        <pkg-ref id="com.soundbrewery.theatre.vst3"/>
+    </choice>
+    <choice id="au" title="Theatre Audio Unit" description="For Logic Pro, Reaper and other AU hosts">
+        <pkg-ref id="com.soundbrewery.theatre.au"/>
+    </choice>
+    <pkg-ref id="com.soundbrewery.theatre.vst3">Theatre-VST3.pkg</pkg-ref>
+    <pkg-ref id="com.soundbrewery.theatre.au">Theatre-AU.pkg</pkg-ref>
+</installer-gui-script>

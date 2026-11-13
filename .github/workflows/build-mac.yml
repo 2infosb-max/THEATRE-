@@ -1,0 +1,71 @@
+name: Build Mac installer
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal: Apple Silicon + Intel)
+        run: cmake -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build VST3 + AU
+        run: cmake --build build --config Release --target Theatre_VST3 Theatre_AU -- -quiet
+
+      - name: Sign plug-ins (ad-hoc)
+        run: |
+          codesign --force --deep --sign - "build/Theatre_artefacts/Release/VST3/Theatre.vst3"
+          codesign --force --deep --sign - "build/Theatre_artefacts/Release/AU/Theatre.component"
+
+      - name: Validate the Audio Unit
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build/Theatre_artefacts/Release/AU/Theatre.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 2
+          auval -v aufx Thtr SBrw
+
+      - name: Build the .pkg installer
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          mkdir -p stage/vst3 stage/au out
+          cp -R build/Theatre_artefacts/Release/VST3/Theatre.vst3 stage/vst3/
+          cp -R build/Theatre_artefacts/Release/AU/Theatre.component stage/au/
+          for k in vst3 au; do
+            pkgbuild --analyze --root stage/$k comp-$k.plist
+            plutil -replace 0.BundleIsRelocatable -bool NO comp-$k.plist
+          done
+          chmod +x packaging/scripts/postinstall
+          pkgbuild --root stage/vst3 --component-plist comp-vst3.plist \
+                   --identifier com.soundbrewery.theatre.vst3 --version "$VERSION" \
+                   --install-location "/Library/Audio/Plug-Ins/VST3" out/Theatre-VST3.pkg
+          pkgbuild --root stage/au --component-plist comp-au.plist --scripts packaging/scripts \
+                   --identifier com.soundbrewery.theatre.au --version "$VERSION" \
+                   --install-location "/Library/Audio/Plug-Ins/Components" out/Theatre-AU.pkg
+          productbuild --distribution packaging/distribution.xml --package-path out \
+                       --resources packaging/resources "Theatre-Installer-$VERSION.pkg"
+          echo "PKG=Theatre-Installer-$VERSION.pkg" >> $GITHUB_ENV
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Theatre-Installer
+          path: ${{ env.PKG }}
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Theatre ${{ env.VERSION }}
+          body: |
+            Download **${{ env.PKG }}** below and double-click it to install Theatre (VST3 + AU) for all your Mac audio apps.
+            See the README for the step-by-step install guide.
+          files: ${{ env.PKG }}
