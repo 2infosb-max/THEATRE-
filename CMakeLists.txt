@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
-project(Theatre VERSION 1.0.0 LANGUAGES C CXX)
+if(NOT DEFINED THEATRE_VERSION)
+    set(THEATRE_VERSION 1.0.0)
+endif()
+project(Theatre VERSION ${THEATRE_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +34,7 @@ juce_add_plugin(Theatre
     PLUGIN_MANUFACTURER_CODE SBrw
     PLUGIN_CODE Thtr
     PRODUCT_NAME "Theatre"
+    VERSION ${PROJECT_VERSION}
     DESCRIPTION "Cinema sound coverage visualiser"
     FORMATS ${THEATRE_FORMATS}
     IS_SYNTH FALSE
@@ -67,6 +71,6 @@ option(THEATRE_TESTS "Build the headless test harness" OFF)
 if(THEATRE_TESTS)
     juce_add_console_app(TheatreTest PRODUCT_NAME "TheatreTest")
     target_sources(TheatreTest PRIVATE Tests/TestMain.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp)
-    target_compile_definitions(TheatreTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JucePlugin_Name="Theatre" JucePlugin_Build_Standalone=0)
+    target_compile_definitions(TheatreTest PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JucePlugin_Name="Theatre" JucePlugin_VersionString="${PROJECT_VERSION}" JucePlugin_Build_Standalone=0)
     target_link_libraries(TheatreTest PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_basics juce::juce_recommended_config_flags)
 endif()

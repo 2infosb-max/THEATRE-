@@ -70,6 +70,8 @@ struct ViewState
     std::array<float, hall::NumCh> renderDb = filled (-140.0f), maxTpDb = filled (-140.0f);
     std::vector<hall::Vec3> trail;
     float srcLevel = 0;
+    bool hasSignal = false;
+    int covVersion = 0;
 
     float spkIntensity (size_t i) const
     {
@@ -80,7 +82,7 @@ struct ViewState
     }
     juce::Colour seatColour (size_t i) const
     {
-        if (show == 0 || cov.rel.empty()) return theme::seatOff;
+        if (show == 0 || ! hasSignal || cov.rel.empty()) return theme::seatOff;
         return theme::heat ((cov.rel[i] + 12.0f) / 18.0f);
     }
 };
@@ -131,6 +133,12 @@ public:
     void setCamera (int preset);
 
 private:
+    void paintStatic (juce::Graphics&);
+    juce::Image sprite (hall::SpkType);
+    std::array<juce::Image, 5> sprites;
+    juce::Image staticLayer;
+    juce::String staticKey;
+
     struct Proj { juce::Point<float> p; float s; float d; };
     Proj project (float x, float y, float z) const;
     void fillQuad (juce::Graphics&, std::array<hall::Vec3, 4>, juce::Colour fill, juce::Colour edge = {}) const;
@@ -229,6 +237,7 @@ private:
     double lastTime = 0;
     std::array<float, hall::NumCh> energy {}, fastEnergy {};
     int lastCovTick = 0;
+    juce::String soundKey;
     std::vector<float> loud100;        // recent 100 ms blocks
     std::vector<float> gated400;       // 400 ms block energies above the absolute gate
     float maxPeakLin = 0;

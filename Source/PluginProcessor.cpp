@@ -29,7 +29,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout TheatreProcessor::createLayo
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "monitor", 1 }, "Monitoring",
                     StringArray { "7.1.4", "7.1", "5.1", "Stereo" }, 0));
     p.push_back (std::make_unique<AudioParameterChoice> (ParameterID { "source", 1 }, "Source",
-                    StringArray { "Built-in panner", "Track signal" }, 0));
+                    StringArray { "Built-in panner", "Track signal" }, 1));
     return { p.begin(), p.end() };
 }
 

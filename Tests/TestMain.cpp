@@ -218,6 +218,29 @@ int main (int argc, char** argv)
             PNGImageFormat().writeImageToStream (img, os);
             std::cout << "      wrote " << f.getFullPathName() << std::endl;
         };
+        // Opening state: nothing is shown until audio arrives
+        {
+            std::unique_ptr<TheatreProcessor> fresh (static_cast<TheatreProcessor*> (createPluginFilter()));
+            fresh->setBusesLayout (l714);
+            fresh->prepareToPlay (sr, bs);
+            std::unique_ptr<TheatreEditor> e2 (static_cast<TheatreEditor*> (fresh->createEditor()));
+            e2->setSize (e2->LW, TheatreEditor::H);
+            for (int i = 0; i < 5; ++i) e2->timerCallback();
+            bool allZero = true;
+            for (auto k : e2->vs.spkLive) if (k > 0.0f) allZero = false;
+            check (allZero, "on opening: no speaker or sphere is lit");
+            check (! e2->vs.hasSignal, "on opening: no signal, seat check shows no values");
+            bool metersEmpty = true;
+            for (auto c : e2->vs.meterChannels) if (e2->vs.levelDb[(size_t) c] > -100.0f) metersEmpty = false;
+            check (metersEmpty && e2->vs.meterChannels.size() == 12, "on opening: all 12 meters empty");
+            check ((int) fresh->apvts.getRawParameterValue ("source")->load() == 1, "default source is Track signal");
+            auto img = e2->createComponentSnapshot (e2->getLocalBounds(), true, 1.0f);
+            File f = outDir.getChildFile ("theatre_open_state.png");
+            f.deleteFile();
+            FileOutputStream os (f);
+            PNGImageFormat().writeImageToStream (img, os);
+        }
+        ed->setChoice ("source", 0);
         ed->setTab (1);
         snap ("theatre_3d_714.png");
         ed->vs.show = 1;
@@ -264,6 +287,31 @@ int main (int argc, char** argv)
             const auto id = ed->vs.model.speakers[(size_t) loudest].id;
             check (id.startsWith (step == 0 ? "L" : step == 1 ? "Ls" : step == 2 ? "Lrs" : "Ltr"),
                    String ("live sphere follows the sound to ") + names[step] + " (loudest: " + id + ")");
+        }
+        // Frame cost at full-screen Retina size (2880 x 1800 pixels)
+        {
+            ed->setSize (roundToInt (1440.0 * ed->LW / 860.0 * 860.0 / 900.0 * 900.0 / 1440.0 * 1440.0 / ed->LW * ed->LW / 860.0 * 0 + 1440.0 * (double) ed->LW / (double) ed->LW), 856);
+            ed->setSize (roundToInt (856.0 * ed->LW / 860.0), 856);
+            const double t0 = Time::getMillisecondCounterHiRes();
+            for (int i = 0; i < 10; ++i)
+            {
+                ed->timerCallback();
+                auto img = ed->createComponentSnapshot (ed->getLocalBounds(), true, 2.0f);
+            }
+            const double ms = (Time::getMillisecondCounterHiRes() - t0) / 10.0;
+            std::cout << "      full-screen retina frame: " << ms << " ms" << std::endl;
+            auto timeIt = [&] (Component& c, const char* name)
+            {
+                const double a0 = Time::getMillisecondCounterHiRes();
+                for (int i = 0; i < 10; ++i) { auto im = c.createComponentSnapshot (c.getLocalBounds(), true, 2.0f * ed->getHeight() / 860.0f); }
+                std::cout << "        " << name << ": " << (Time::getMillisecondCounterHiRes() - a0) / 10.0 << " ms" << std::endl;
+            };
+            timeIt (ed->hall3d, "3D hall (spheres)");
+            ed->vs.show = 2; timeIt (ed->hall3d, "3D hall (seat heat only)"); ed->vs.show = 0;
+            timeIt (ed->meters, "meters");
+            timeIt (ed->seatPanel, "seat panel");
+            timeIt (ed->sound, "sound panel");
+            ed->setTab (0); timeIt (ed->plan, "plan view"); ed->setTab (1);
         }
         check (true, "editor rendered");
     }
