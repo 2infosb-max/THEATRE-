@@ -43,11 +43,10 @@ jobs:
             pkgbuild --analyze --root stage/$k comp-$k.plist
             plutil -replace 0.BundleIsRelocatable -bool NO comp-$k.plist
           done
-          chmod +x packaging/scripts/postinstall
           pkgbuild --root stage/vst3 --component-plist comp-vst3.plist \
                    --identifier com.soundbrewery.theatre.vst3 --version "$VERSION" \
                    --install-location "/Library/Audio/Plug-Ins/VST3" out/Theatre-VST3.pkg
-          pkgbuild --root stage/au --component-plist comp-au.plist --scripts packaging/scripts \
+          pkgbuild --root stage/au --component-plist comp-au.plist \
                    --identifier com.soundbrewery.theatre.au --version "$VERSION" \
                    --install-location "/Library/Audio/Plug-Ins/Components" out/Theatre-AU.pkg
           productbuild --distribution packaging/distribution.xml --package-path out \
