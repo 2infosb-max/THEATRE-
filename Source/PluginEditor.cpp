@@ -120,7 +120,7 @@ void PlanView::paint (Graphics& g)
     sectionTitle (g, "Hall plan - top view", 22, 20);
     g.setColour (theme::dim);
     g.setFont (theme::font (11.0f));
-    g.drawText ("Live: speakers light up with your track, lines show the sound reaching the mix position", 22, 38, 520, 14, Justification::left);
+    g.drawText ("Live: speakers and spheres follow your track; SOUND shows where the mix position hears it", 22, 38, 520, 14, Justification::left);
 
     const auto& M = vs.model;
     const auto& mixSeat = M.seats[(size_t) M.mixSeat];
@@ -169,21 +169,39 @@ void PlanView::paint (Graphics& g)
         g.fillRect (r.getX(), r.getBottom(), r.getWidth(), 3.0f);
     }
 
-    // Lines: sound from each playing speaker reaching the mix position
-    const auto mixP = P (mixSeat.x, mixSeat.y);
+    // Spheres seen from above: same size (in metres) and colours as the 3D hall
+    g.saveState();
+    g.reduceClipRegion (planRect.expanded (2.0f).toNearestInt());
     for (size_t i = 0; i < M.speakers.size(); ++i)
     {
         const float k = vs.spkIntensity (i);
-        if (k < 0.1f || M.speakers[i].ch == hall::LFE) continue;
-        auto c = theme::groupColour (M.speakers[i].type);
-        auto sp = P (M.speakers[i].x, M.speakers[i].y);
-        g.setColour (c.withAlpha (0.15f + 0.4f * k));
-        g.drawLine ({ sp, mixP }, 1.0f + 2.0f * k);
-        const float f = std::fmod (vs.pulse + (float) i * 0.137f, 1.0f);
-        auto dot = sp + (mixP - sp) * f;
-        g.setColour (c.withAlpha (k));
-        g.fillEllipse (dot.x - 3.0f, dot.y - 3.0f, 6.0f, 6.0f);
+        if (k < 0.03f) continue;
+        const auto& sp = M.speakers[i];
+        const float flash = i < vs.spkFlash.size() ? vs.spkFlash[i] : 0.0f;
+        const float a = jmin (1.0f, k + 0.5f * flash);
+        const float rad = (0.35f + 2.4f * k + 0.3f * flash) * S;
+        auto c = theme::groupColour (sp.type);
+        auto p = P (sp.x, sp.y);
+        const Rectangle<float> body (p.x - rad, p.y - rad, rad * 2.0f, rad * 2.0f);
+        g.setColour (c.withAlpha (0.08f + 0.12f * a));
+        g.fillEllipse (body);
+        g.setColour (c.withAlpha (0.06f + 0.12f * a));
+        g.fillEllipse (body.reduced (rad * 0.38f));
+        g.setColour (c.withAlpha (0.12f + 0.40f * a));
+        g.drawEllipse (body.reduced (1.0f), 1.2f + 1.5f * a);
+        const float ph = i < vs.wavePhase.size() ? vs.wavePhase[i] : 0.0f;
+        for (int w = 0; w < 2; ++w)
+        {
+            const float f = std::fmod (ph + 0.5f * (float) w, 1.0f);
+            const float wr = rad * (0.3f + 1.3f * f);
+            g.setColour (c.withAlpha ((1.0f - f) * 0.45f * k));
+            g.drawEllipse (p.x - wr, p.y - wr, wr * 2.0f, wr * 2.0f, 1.0f + 0.8f * k);
+        }
     }
+
+    g.restoreState();
+
+    const auto mixP = P (mixSeat.x, mixSeat.y);
 
     // Speakers
     for (size_t i = 0; i < M.speakers.size(); ++i)
@@ -238,7 +256,7 @@ void PlanView::paint (Graphics& g)
         g.fillEllipse (p.x - 7.0f, p.y - 7.0f, 14.0f, 14.0f);
         g.setFont (theme::mono (10.0f, true));
         g.setColour (theme::cream);
-        g.drawText ("SOUND", (int) p.x - 40, (int) p.y - 28, 80, 12, Justification::centred);
+        g.drawText ("SOUND", (int) p.x - 40, (int) p.y + 14, 80, 12, Justification::centred);
     }
 
     // Mix position
@@ -275,20 +293,26 @@ void PlanView::paint (Graphics& g)
         g.setColour (r == 8 ? theme::accent : c);
         g.fillRoundedRectangle (sp.x - 4.5f, sp.y, 9.0f, S2, 2.0f);
     }
+    g.saveState();
+    g.reduceClipRegion (secRect.toNearestInt());
     for (size_t i = 0; i < M.speakers.size(); ++i)
     {
         const auto& s = M.speakers[i];
         const float k = vs.spkIntensity (i);
         auto p = Q (s.y, s.z);
         auto c = theme::groupColour (s.type);
-        if (k > 0.02f)
+        if (k > 0.03f)
         {
-            g.setColour (c.withAlpha (0.18f * k));
-            g.fillEllipse (p.x - 10.0f * k - 4.0f, p.y - 10.0f * k - 4.0f, 20.0f * k + 8.0f, 20.0f * k + 8.0f);
+            const float rad = (0.35f + 2.4f * k) * S2;
+            g.setColour (c.withAlpha (0.10f + 0.12f * k));
+            g.fillEllipse (p.x - rad, p.y - rad, rad * 2.0f, rad * 2.0f);
+            g.setColour (c.withAlpha (0.15f + 0.4f * k));
+            g.drawEllipse (p.x - rad, p.y - rad, rad * 2.0f, rad * 2.0f, 1.2f);
         }
         g.setColour (k > 0.02f ? c.withAlpha (0.35f + 0.65f * k) : Colour (0xff2c3240));
         g.fillRoundedRectangle (p.x - 4.0f, p.y - 4.0f, 8.0f, 8.0f, 2.0f);
     }
+    g.restoreState();
     if (vs.hasSignal)
     {
         auto p = Q (vs.image.y, vs.image.z);
@@ -575,26 +599,7 @@ void Hall3DView::paint (Graphics& g)
         }
     }
 
-    // Sound travelling from each playing speaker to the mix position (listener's head)
     const auto head = project (mixSeat.x, mixSeat.y, mixSeat.ear);
-    for (size_t i = 0; i < M.speakers.size(); ++i)
-    {
-        const float k = vs.spkIntensity (i);
-        if (k < 0.1f || M.speakers[i].ch == hall::LFE) continue;
-        const auto& sp = M.speakers[i];
-        auto pr = project (sp.x, sp.y, sp.z);
-        auto c = theme::groupColour (sp.type);
-        g.setColour (c.withAlpha (0.10f + 0.35f * k));
-        g.drawLine ({ pr.p, head.p }, 1.0f + 2.0f * k);
-        for (int d = 0; d < 3; ++d)
-        {
-            const float f = std::fmod (vs.pulse + (float) d / 3.0f + (float) i * 0.137f, 1.0f);
-            auto dot = pr.p + (head.p - pr.p) * f;
-            const float rr = 2.0f + 3.0f * k;
-            g.setColour (c.withAlpha (k * (0.4f + 0.6f * f)));
-            g.fillEllipse (dot.x - rr, dot.y - rr, rr * 2.0f, rr * 2.0f);
-        }
-    }
 
     // Live coverage spheres, driven by the channel meters
     if (vs.show != 2)
@@ -617,13 +622,13 @@ void Hall3DView::paint (Graphics& g)
             const auto& sp = M.speakers[(size_t) s.idx];
             auto pr = project (sp.x, sp.y, sp.z);
             const float flash = s.idx < (int) vs.spkFlash.size() ? vs.spkFlash[(size_t) s.idx] : 0.0f;
-            const float rad = (0.6f + 7.0f * s.k + 0.8f * flash) * pr.s;
+            const float rad = (0.35f + 2.4f * s.k + 0.3f * flash) * pr.s;   // compact: about a third of the old size
             const float a = jmin (1.0f, s.k + 0.5f * flash);
             auto c = theme::groupColour (sp.type);
             const Rectangle<float> body (pr.p.x - rad, pr.p.y - rad, rad * 2.0f, rad * 2.0f);
-            g.setColour (c.withAlpha (0.05f + 0.08f * a));
+            g.setColour (c.withAlpha (0.08f + 0.12f * a));
             g.fillEllipse (body);
-            g.setColour (c.withAlpha (0.04f + 0.08f * a));
+            g.setColour (c.withAlpha (0.06f + 0.12f * a));
             g.fillEllipse (body.reduced (rad * 0.38f));
             g.setColour (c.withAlpha (0.12f + 0.40f * a));
             g.drawEllipse (body.reduced (1.0f), 1.5f + 2.0f * a);
@@ -634,9 +639,9 @@ void Hall3DView::paint (Graphics& g)
             for (int w = 0; w < 2; ++w)
             {
                 const float f = std::fmod (ph + 0.5f * (float) w, 1.0f);
-                const float wr = rad * (0.15f + 1.05f * f);
-                g.setColour (c.withAlpha ((1.0f - f) * 0.6f * s.k));
-                g.drawEllipse (pr.p.x - wr, pr.p.y - wr, wr * 2.0f, wr * 2.0f, 1.0f + 1.5f * s.k);
+                const float wr = rad * (0.3f + 1.3f * f);
+                g.setColour (c.withAlpha ((1.0f - f) * 0.45f * s.k));
+                g.drawEllipse (pr.p.x - wr, pr.p.y - wr, wr * 2.0f, wr * 2.0f, 1.0f + 0.8f * s.k);
             }
 
             if (s.k < labelMin || s.k < 0.2f) continue;
@@ -729,7 +734,7 @@ void Hall3DView::paint (Graphics& g)
     key ("LFE", theme::groupColour (hall::SpkType::Sub));
     g.setColour (theme::dim);
     g.setFont (theme::font (11.0f));
-    g.drawText ("Sphere size = channel level  |  dots = sound reaching the mix position  |  drag to orbit, scroll to zoom",
+    g.drawText ("Sphere size = channel level  |  SOUND = where the mix position hears it  |  drag to orbit, scroll to zoom",
                 x + 6, y, 560, 14, Justification::left);
 }
 

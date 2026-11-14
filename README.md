@@ -4,7 +4,7 @@
 
 ## What it shows
 
-- **3D Hall (live):** a 20 × 26 × 9 m cinema with 308 tiered seats, a screen and 33 speakers. Every speaker's **coverage sphere** follows its channel meter: it grows, pulses, sends out wavefronts and fades with the audio. Dots travel from every playing speaker to the **mix position**, and the **SOUND** marker shows where the mix position hears the sound (L + R equal = screen centre). Sphere colours: blue for the screen, green for the surrounds, amber for the ceiling, violet for the LFE.
+- **3D Hall (live):** a 20 × 26 × 9 m cinema with 308 tiered seats, a screen and 33 speakers. Every speaker's **coverage sphere** follows its channel meter: it grows, pulses, sends out wavefronts and fades with the audio. The **SOUND** marker shows where the mix position hears the sound (L + R equal = screen centre). Sphere colours: blue for the screen, green for the surrounds, amber for the ceiling, violet for the LFE.
 - **Plan view:** a top-down plan with seat colours (level compared with the mix position) and a side section for height.
 - **Mix position:** the direction and height of the sound as heard from the mix position (row I, centre), and where it comes from.
 - **Channel meters:** always show the track's real channels. True-peak bars (4× oversampled, ITU-R BS.1770-4 method), fall-back of 20 dB in 1.7 s, 2 s peak hold, a max true-peak number per channel (red at −1 dBTP and above), and Momentary / Short-term / Integrated LUFS.
